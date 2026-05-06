@@ -25,10 +25,13 @@ Pods/
 # Old/duplicate project files
 Famoria 2026.xcodeproj/
 Famoria 2026 with Firebase copy.xcodeproj/
-Famoria 2026 with Firebase.xcodeproj/ChatModels.swift
-Famoria 2026 with Firebase.xcodeproj/DirectMessagesView.swift
-Famoria 2026 with Firebase.xcodeproj/FirebaseChatService.swift
-Famoria 2026 with Firebase.xcodeproj/FirebaseContentService.swift
+1.Famoria 2026 with Firebase.xcodeproj/
+
+# Swift files accidentally inside xcodeproj bundles
+Famoria with Firebase.xcodeproj/ChatModels.swift
+Famoria with Firebase.xcodeproj/DirectMessagesView.swift
+Famoria with Firebase.xcodeproj/FirebaseChatService.swift
+Famoria with Firebase.xcodeproj/FirebaseContentService.swift
 
 # Archive
 Archive/
