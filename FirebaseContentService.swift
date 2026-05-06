@@ -1,9 +1,3 @@
-// TEMPORARILY DISABLED: Firebase SDK is not properly installed
-// This file will fail to compile until Firebase is added to the project
-// See AppState.swift for instructions on installing Firebase
-
-/*
-
 import Foundation
 import FirebaseCore
 import FirebaseFirestore
@@ -266,5 +260,4 @@ enum ContentServiceError: LocalizedError {
         }
     }
 }
-*/
 

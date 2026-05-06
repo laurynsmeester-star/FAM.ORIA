@@ -27,12 +27,6 @@ struct Invite: Identifiable, Equatable {
     let invitedEmail: String
 }
 
-enum MemberRole: String, Codable, CaseIterable {
-    case owner
-    case admin
-    case member
-}
-
 @MainActor
 final class AppState: ObservableObject {
     @Published var currentUser: User?
@@ -40,9 +34,63 @@ final class AppState: ObservableObject {
     @Published var isAuthenticated: Bool = false
     @Published var pendingInvites: [Invite] = []
     @Published var deepLinkInviteID: String? = nil
-    
+    @Published var deepLinkPage: FamoriaPage? = nil
+
     @Published var events: [FamilyEvent] = []
     @Published var posts: [FamilyPost] = []
+    
+    @Published var chats: [Chat] = [] // All DM/group threads
+    @Published var messagesByChat: [String: [ChatMessage]] = [:] // Chat ID → messages
+    @Published var activeChatId: String? = nil // Currently viewed chat
+
+    // Notifications
+    @Published var notifications: [FamoriaNotification] = []
+    private var notificationsListener: ListenerRegistration?
+
+    func startListeningToNotifications() {
+        notificationsListener?.remove()
+        notificationsListener = db.collection("famoria_notifications")
+            .order(by: "createdDate", descending: true)
+            .limit(to: 100)
+            .addSnapshotListener { [weak self] snapshot, error in
+                guard let self, let snapshot else { return }
+                self.notifications = snapshot.documents.compactMap { doc in
+                    var data = doc.data()
+                    data["id"] = doc.documentID
+                    return try? Firestore.Decoder().decode(FamoriaNotification.self, from: data)
+                }
+            }
+    }
+
+    var unreadNotificationCount: Int {
+        notifications.filter { !$0.isRead }.count
+    }
+
+    func markNotificationRead(_ id: String) {
+        db.collection("famoria_notifications").document(id).updateData(["isRead": true])
+    }
+
+    func markAllNotificationsRead() {
+        for notif in notifications where !notif.isRead {
+            db.collection("famoria_notifications").document(notif.id).updateData(["isRead": true])
+        }
+    }
+
+    func removeNotification(_ id: String) {
+        db.collection("famoria_notifications").document(id).delete()
+    }
+
+    func addNotification(title: String, body: String, type: FamoriaNotificationType) {
+        let notification = FamoriaNotification(
+            id: UUID().uuidString,
+            title: title,
+            body: body,
+            type: type,
+            isRead: false,
+            createdDate: Date()
+        )
+        try? db.collection("famoria_notifications").document(notification.id).setData(from: notification)
+    }
     
     // Firestore instance
     private let db = Firestore.firestore()
@@ -61,26 +109,50 @@ final class AppState: ObservableObject {
     }
     
     // Services - use Firebase in production, StubAuthService for testing
-    // TODO: Switch back to FirebaseAuthService once Firebase SDK is properly installed
-    var auth: AuthService = StubAuthService()
-    // Temporarily commented out until Firebase SDK is fixed
-    // private let familyService = FirebaseFamilyService()
-    // private let contentService = FirebaseContentService()
+    var auth: AuthService = FirebaseAuthService()
+    private let familyService = FirebaseFamilyService()
+    private let contentService = FirebaseContentService()
+    private let chatService = FirebaseChatService()
     
-    // Real-time listeners - commented out until Firebase is working
-    // private var familyListener: ListenerRegistration?
-    // private var postsListener: ListenerRegistration?
-    // private var eventsListener: ListenerRegistration?
+    // Real-time listeners
+    private var familyListener: ListenerRegistration?
+    private var postsListener: ListenerRegistration?
+    private var eventsListener: ListenerRegistration?
+    private var chatsListener: ListenerRegistration?
+    private var messagesListeners: [String: ListenerRegistration] = [:]
     
     init() {
-        // Initialize with default values
+        startListeningToNotifications()
+    }
+
+    /// Call on app launch to restore a persisted Firebase Auth session.
+    func checkAuthState() {
+        guard UserDefaults.standard.bool(forKey: "famoria.staySignedIn") != false else { return }
+        // Firebase Auth automatically persists the session.
+        // FirebaseAuthService.restoreSession can re-hydrate currentUser.
+        if let authService = auth as? FirebaseAuthService {
+            Task {
+                if let user = await authService.restoreSession() {
+                    self.currentUser = user
+                    self.isAuthenticated = true
+                    if let familyId = user.familyId {
+                        await loadFamilyData(familyId: familyId)
+                    }
+                    observeChats()
+                }
+            }
+        }
     }
     
     deinit {
-        // Clean up listeners - disabled until Firebase is working
-        // familyListener?.remove()
-        // postsListener?.remove()
-        // eventsListener?.remove()
+        familyListener?.remove()
+        postsListener?.remove()
+        eventsListener?.remove()
+        chatsListener?.remove()
+        notificationsListener?.remove()
+        for listener in messagesListeners.values {
+            listener.remove()
+        }
     }
     
     func handleSignIn(email: String, password: String) async throws {
@@ -92,19 +164,35 @@ final class AppState: ObservableObject {
         if let familyId = user.familyId {
             await loadFamilyData(familyId: familyId)
         }
+        
+        // Start observing chats
+        observeChats()
     }
     
     func handleSignUp(name: String, email: String, password: String) async throws {
         let user = try await auth.signUp(email: email, password: password, name: name)
         self.currentUser = user
         self.isAuthenticated = true
+        
+        // Start observing chats
+        observeChats()
     }
     
     func signOut() async {
-        // Clean up listeners - disabled until Firebase is working
-        // familyListener?.remove()
-        // postsListener?.remove()
-        // eventsListener?.remove()
+        familyListener?.remove()
+        postsListener?.remove()
+        eventsListener?.remove()
+        chatsListener?.remove()
+        notificationsListener?.remove()
+        for listener in messagesListeners.values {
+            listener.remove()
+        }
+        messagesListeners.removeAll()
+
+        // Clear saved session if not staying signed in
+        if !UserDefaults.standard.bool(forKey: "famoria.staySignedIn") {
+            UserDefaults.standard.removeObject(forKey: "famoria.savedEmail")
+        }
         
         do { try await auth.signOut() } catch { print(error) }
         currentUser = nil
@@ -112,6 +200,9 @@ final class AppState: ObservableObject {
         isAuthenticated = false
         events = []
         posts = []
+        chats = []
+        messagesByChat = [:]
+        activeChatId = nil
     }
     
     // MARK: - Family Management
@@ -122,10 +213,6 @@ final class AppState: ObservableObject {
             throw AppStateError.notAuthenticated
         }
         
-        // TODO: Re-enable once Firebase SDK is installed
-        fatalError("Firebase integration temporarily disabled. Please install Firebase SDK.")
-        
-        /*
         let family = try await familyService.createFamily(name: name, ownerUser: user)
         self.currentFamily = family
         self.currentUser?.familyId = family.id
@@ -133,7 +220,6 @@ final class AppState: ObservableObject {
         
         // Start observing the family
         await loadFamilyData(familyId: family.id)
-        */
     }
     
     /// Generates an invite code for the current family
@@ -143,17 +229,12 @@ final class AppState: ObservableObject {
             throw AppStateError.noFamily
         }
         
-        // TODO: Re-enable once Firebase SDK is installed
-        fatalError("Firebase integration temporarily disabled. Please install Firebase SDK.")
-        
-        /*
         let code = try await familyService.generateInviteCode(
             familyId: family.id,
             createdBy: user.id
         )
         
         return code
-        */
     }
     
     /// Validates and joins a family using an invite code
@@ -162,10 +243,6 @@ final class AppState: ObservableObject {
             throw AppStateError.notAuthenticated
         }
         
-        // TODO: Re-enable once Firebase SDK is installed
-        fatalError("Firebase integration temporarily disabled. Please install Firebase SDK.")
-        
-        /*
         let family = try await familyService.joinFamily(withCode: code, user: user)
         self.currentFamily = family
         self.currentUser?.familyId = family.id
@@ -173,14 +250,11 @@ final class AppState: ObservableObject {
         
         // Start observing the family
         await loadFamilyData(familyId: family.id)
-        */
     }
     
     /// Validates an invite code without joining
     func validateInviteCode(_ code: String) async throws -> (familyId: String, familyName: String) {
-        // TODO: Re-enable once Firebase SDK is installed
-        fatalError("Firebase integration temporarily disabled. Please install Firebase SDK.")
-        // return try await familyService.validateInviteCode(code)
+        return try await familyService.validateInviteCode(code)
     }
     
     // MARK: - Content Management
@@ -192,10 +266,6 @@ final class AppState: ObservableObject {
             throw AppStateError.noFamily
         }
         
-        // TODO: Re-enable once Firebase SDK is installed
-        fatalError("Firebase integration temporarily disabled. Please install Firebase SDK.")
-        
-        /*
         let post = try await contentService.createPost(
             familyId: family.id,
             authorName: user.name,
@@ -205,7 +275,6 @@ final class AppState: ObservableObject {
         
         // Post will be updated via listener, but we can add it immediately for optimistic UI
         self.posts.insert(post, at: 0)
-        */
     }
     
     /// Creates a new event in the family calendar
@@ -215,10 +284,6 @@ final class AppState: ObservableObject {
             throw AppStateError.noFamily
         }
         
-        // TODO: Re-enable once Firebase SDK is installed
-        fatalError("Firebase integration temporarily disabled. Please install Firebase SDK.")
-        
-        /*
         let event = try await contentService.createEvent(
             familyId: family.id,
             title: title,
@@ -229,7 +294,6 @@ final class AppState: ObservableObject {
         // Event will be updated via listener
         self.events.append(event)
         self.events.sort { $0.date < $1.date }
-        */
     }
     
     /// Deletes a post
@@ -238,15 +302,10 @@ final class AppState: ObservableObject {
             throw AppStateError.noFamily
         }
         
-        // TODO: Re-enable once Firebase SDK is installed
-        fatalError("Firebase integration temporarily disabled. Please install Firebase SDK.")
-        
-        /*
         try await contentService.deletePost(familyId: family.id, postId: post.id)
         
         // Remove optimistically
         self.posts.removeAll { $0.id == post.id }
-        */
     }
     
     /// Deletes an event
@@ -255,25 +314,121 @@ final class AppState: ObservableObject {
             throw AppStateError.noFamily
         }
         
-        // TODO: Re-enable once Firebase SDK is installed
-        fatalError("Firebase integration temporarily disabled. Please install Firebase SDK.")
-        
-        /*
         try await contentService.deleteEvent(familyId: family.id, eventId: event.id)
         
         // Remove optimistically
         self.events.removeAll { $0.id == event.id }
-        */
+    }
+    
+    // MARK: - Chat Management
+    
+    /// Fetch all chats for current user
+    func fetchChats() async throws {
+        guard let user = currentUser else {
+            throw AppStateError.notAuthenticated
+        }
+        let fetchedChats = try await chatService.fetchChats(forUserId: user.id)
+        self.chats = fetchedChats
+    }
+    
+    /// Fetch messages for a specific chat
+    func fetchMessages(for chatId: String) async throws {
+        let fetchedMessages = try await chatService.fetchMessages(chatId: chatId)
+        messagesByChat[chatId] = fetchedMessages
+    }
+    
+    /// Send a message to a chat
+    func sendMessage(to chatId: String, content: String, replyTo: ChatMessage? = nil) async throws {
+        guard let user = currentUser else {
+            throw AppStateError.notAuthenticated
+        }
+        let message = try await chatService.sendMessage(
+            chatId: chatId,
+            senderId: user.id,
+            senderName: user.name,
+            content: content,
+            replyTo: replyTo
+        )
+        
+        // Optimistic update
+        var currentMessages = messagesByChat[chatId] ?? []
+        currentMessages.append(message)
+        messagesByChat[chatId] = currentMessages
+    }
+    
+    /// Add a reaction to a message
+    func addReaction(_ emoji: String, to messageId: String, in chatId: String) async throws {
+        guard let user = currentUser else {
+            throw AppStateError.notAuthenticated
+        }
+        try await chatService.addReaction(
+            emoji: emoji,
+            toMessage: messageId,
+            inChat: chatId,
+            userId: user.id,
+            userName: user.name
+        )
+    }
+    
+    /// Set typing status
+    func setTyping(_ isTyping: Bool, in chatId: String) async throws {
+        guard let user = currentUser else { return }
+        try await chatService.setTyping(isTyping, userId: user.id, chatId: chatId)
+    }
+    
+    /// Create a new group chat
+    func createGroupChat(with userIds: [String], participantNames: [String: String], name: String) async throws {
+        guard let user = currentUser else {
+            throw AppStateError.notAuthenticated
+        }
+        let chat = try await chatService.createGroupChat(
+            creatorId: user.id,
+            participantIds: userIds,
+            participantNames: participantNames,
+            name: name
+        )
+        chats.append(chat)
+    }
+    
+    /// Create a direct chat with one user
+    func createDirectChat(with userId: String, userName: String) async throws {
+        guard let user = currentUser else {
+            throw AppStateError.notAuthenticated
+        }
+        let chat = try await chatService.createDirectChat(
+            userId1: user.id,
+            userName1: user.name,
+            userId2: userId,
+            userName2: userName
+        )
+        chats.append(chat)
+    }
+    
+    /// Observe chats in real-time
+    func observeChats() {
+        guard let user = currentUser else { return }
+        chatsListener?.remove()
+        chatsListener = chatService.observeChats(forUserId: user.id) { [weak self] (chats: [Chat]) in
+            Task { @MainActor in
+                self?.chats = chats
+            }
+        }
+    }
+    
+    /// Observe messages for a specific chat in real-time
+    func observeMessages(for chatId: String) {
+        messagesListeners[chatId]?.remove()
+        messagesListeners[chatId] = chatService.observeMessages(chatId: chatId) { [weak self] (messages: [ChatMessage]) in
+            Task { @MainActor in
+                self?.messagesByChat[chatId] = messages
+            }
+        }
     }
     
     // MARK: - Data Loading
     
     /// Loads all family data and sets up real-time listeners
     func loadFamilyData(familyId: String) async {
-        // TODO: Re-enable once Firebase SDK is installed
-        print("Firebase integration temporarily disabled. Cannot load family data.")
-        
-        /*
         do {
             // Fetch initial data
             let family = try await familyService.fetchFamily(familyId: familyId)
@@ -288,15 +443,10 @@ final class AppState: ObservableObject {
         } catch {
             print("Error loading family data: \(error)")
         }
-        */
     }
     
     /// Sets up real-time listeners for family, posts, and events
     func observeLiveUpdates(familyId: String) {
-        // TODO: Re-enable once Firebase SDK is installed
-        print("Firebase integration temporarily disabled. Cannot observe live updates.")
-        
-        /*
         // Clean up existing listeners
         familyListener?.remove()
         postsListener?.remove()
@@ -322,7 +472,6 @@ final class AppState: ObservableObject {
                 self?.events = events
             }
         }
-        */
     }
     
     // MARK: - Invites (Legacy - keeping for compatibility)
@@ -357,14 +506,10 @@ final class AppState: ObservableObject {
     }
     
     // MARK: - Member Management
-    
+
     func remove(member: User) {
         guard let family = currentFamily else { return }
-        
-        // TODO: Re-enable once Firebase SDK is installed
-        print("Firebase integration temporarily disabled. Cannot remove member.")
-        
-        /*
+
         Task {
             do {
                 try await familyService.removeMember(userId: member.id, fromFamily: family.id)
@@ -373,7 +518,35 @@ final class AppState: ObservableObject {
                 print("Error removing member: \(error)")
             }
         }
-        */
+    }
+
+    func removeMemberAsync(_ member: User) async throws {
+        guard let family = currentFamily else { throw AppStateError.noFamily }
+        try await familyService.removeMember(userId: member.id, fromFamily: family.id)
+        currentFamily?.members.removeAll { $0.id == member.id }
+    }
+
+    func updateMemberRole(_ member: User, to newRole: MemberRole) async throws {
+        guard let family = currentFamily else { throw AppStateError.noFamily }
+        try await familyService.updateMemberRole(userId: member.id, familyId: family.id, newRole: newRole)
+        if let index = currentFamily?.members.firstIndex(where: { $0.id == member.id }) {
+            currentFamily?.members[index].role = newRole
+        }
+    }
+    
+    /// Creates a Firebase user and immediately creates a family with that user as owner.
+    /// Intended for testing admin accounts.
+    public func registerAdminAccount(adminName: String, email: String, password: String, familyName: String) async throws {
+        let user = try await auth.signUp(email: email, password: password, name: adminName)
+        self.currentUser = user
+        self.isAuthenticated = true
+        
+        let family = try await familyService.createFamily(name: familyName, ownerUser: user)
+        self.currentFamily = family
+        self.currentUser?.familyId = family.id
+        self.currentUser?.role = .owner
+        
+        await loadFamilyData(familyId: family.id)
     }
 }
 // MARK: - Errors
@@ -391,7 +564,4 @@ enum AppStateError: LocalizedError {
         }
     }
 }
-
-call exampleFirestoreUsage()
-
 

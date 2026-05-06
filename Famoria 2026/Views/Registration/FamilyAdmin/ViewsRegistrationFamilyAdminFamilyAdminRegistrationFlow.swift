@@ -31,7 +31,7 @@ struct FamilyAdminRegistrationFlow: View {
                 
                 VStack {
                     // Progress indicator
-                    ProgressBar(currentStep: currentStep, totalSteps: 3)
+                    RegistrationProgressBar(currentStep: currentStep, totalSteps: 3)
                         .padding()
                     
                     // Content based on current step
@@ -169,9 +169,18 @@ struct FamilyAdminRegistrationFlow: View {
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
-                    isLoading = false
-                    currentStep = 0 // Go back to first step on error
+                    // 🐛 ENHANCED ERROR LOGGING
+                    print("❌ Registration error: \(error.localizedDescription)")
+                    print("❌ Full error details: \(error)")
+                    if let nsError = error as NSError? {
+                        print("❌ Error domain: \(nsError.domain)")
+                        print("❌ Error code: \(nsError.code)")
+                        print("❌ Error userInfo: \(nsError.userInfo)")
+                    }
+                    
+                    self.errorMessage = error.localizedDescription
+                    self.isLoading = false
+                    // Stay on review screen instead of going back
                 }
             }
         }
@@ -209,13 +218,13 @@ struct PersonalInfoStepView: View {
                 .padding(.top, 40)
                 
                 VStack(spacing: 16) {
-                    FormField(label: "Full Name", text: $name, placeholder: "John Doe")
+                    RegistrationFormField(label: "Full Name", text: $name, placeholder: "John Doe")
                     
-                    FormField(label: "Email", text: $email, placeholder: "email@example.com", keyboardType: .emailAddress)
+                    RegistrationFormField(label: "Email", text: $email, placeholder: "email@example.com", keyboardType: .emailAddress)
                     
-                    FormField(label: "Password", text: $password, placeholder: "At least 6 characters", isSecure: true)
+                    RegistrationFormField(label: "Password", text: $password, placeholder: "At least 6 characters", isSecure: true)
                     
-                    FormField(label: "Confirm Password", text: $confirmPassword, placeholder: "Re-enter password", isSecure: true)
+                    RegistrationFormField(label: "Confirm Password", text: $confirmPassword, placeholder: "Re-enter password", isSecure: true)
                     
                     if let errorMessage {
                         Text(errorMessage)
@@ -255,7 +264,7 @@ struct FamilyInfoStepView: View {
                 .padding(.top, 40)
                 
                 VStack(spacing: 16) {
-                    FormField(label: "Family Name", text: $familyName, placeholder: "The Smith Family")
+                    RegistrationFormField(label: "Family Name", text: $familyName, placeholder: "The Smith Family")
                     
                     Text("As a Family Admin, you'll be able to invite members and manage your family's shared content.")
                         .font(.caption)
@@ -304,9 +313,9 @@ struct ReviewAndCompleteStepView: View {
                 .padding(.top, 40)
                 
                 VStack(spacing: 16) {
-                    ReviewField(label: "Name", value: name)
-                    ReviewField(label: "Email", value: email)
-                    ReviewField(label: "Family Name", value: familyName)
+                    RegistrationReviewField(label: "Name", value: name)
+                    RegistrationReviewField(label: "Email", value: email)
+                    RegistrationReviewField(label: "Family Name", value: familyName)
                     
                     Divider()
                         .padding(.vertical, 8)
@@ -347,7 +356,7 @@ struct ReviewAndCompleteStepView: View {
 
 // MARK: - Reusable Components
 
-struct ProgressBar: View {
+struct RegistrationProgressBar: View {
     let currentStep: Int
     let totalSteps: Int
     
@@ -363,7 +372,7 @@ struct ProgressBar: View {
     }
 }
 
-struct FormField: View {
+struct RegistrationFormField: View {
     let label: String
     @Binding var text: String
     let placeholder: String
@@ -394,7 +403,7 @@ struct FormField: View {
     }
 }
 
-struct ReviewField: View {
+struct RegistrationReviewField: View {
     let label: String
     let value: String
     

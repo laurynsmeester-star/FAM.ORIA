@@ -87,7 +87,7 @@ struct WelcomePageView: View {
                         }
                     }
                     .padding(.horizontal, 32)
-                    .padding(.bottom, 50)
+                    .padding(.bottom, 60)
                 }
             }
         }

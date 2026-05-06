@@ -1,0 +1,34 @@
+# Xcode user data
+xcuserdata/
+*.xcuserdatad/
+
+# Build artifacts
+build/
+DerivedData/
+*.app
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# SPM
+.build/
+.swiftpm/
+
+# Dependency caches
+Pods/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Old/duplicate project files
+Famoria 2026.xcodeproj/
+Famoria 2026 with Firebase copy.xcodeproj/
+Famoria 2026 with Firebase.xcodeproj/ChatModels.swift
+Famoria 2026 with Firebase.xcodeproj/DirectMessagesView.swift
+Famoria 2026 with Firebase.xcodeproj/FirebaseChatService.swift
+Famoria 2026 with Firebase.xcodeproj/FirebaseContentService.swift
+
+# Archive
+Archive/

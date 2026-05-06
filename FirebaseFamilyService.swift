@@ -1,9 +1,3 @@
-// TEMPORARILY DISABLED: Firebase SDK is not properly installed
-// This file will fail to compile until Firebase is added to the project
-// See AppState.swift for instructions on installing Firebase
-
-/*
-
 import Foundation
 import FirebaseCore
 import FirebaseFirestore
@@ -141,7 +135,7 @@ final class FirebaseFamilyService {
     /// Joins a family using a valid invite code
     func joinFamily(withCode code: String, user: User) async throws -> Family {
         // Validate code first
-        let (familyId, familyName) = try await validateInviteCode(code)
+        let (familyId, _) = try await validateInviteCode(code)
         
         // Check if user is already in a family
         if user.familyId != nil {
@@ -288,7 +282,7 @@ final class FirebaseFamilyService {
         let listener = familiesRef.document(familyId)
             .collection("members")
             .addSnapshotListener { snapshot, error in
-                guard let documents = snapshot?.documents else {
+                guard (snapshot?.documents) != nil else {
                     onChange(nil)
                     return
                 }
@@ -343,5 +337,4 @@ enum FamilyServiceError: LocalizedError {
         }
     }
 }
-*/
 

@@ -14,8 +14,8 @@ import SwiftUI
 
 // MARK: - Additional Models
 
-/// Mirrors ChatMessage entity from the web app
-struct ChatMessage: Identifiable {
+/// Mirrors ChatMessage entity from the web app (renamed to avoid conflict with Messaging ChatMessage)
+struct FeedMessage: Identifiable {
     let id: String
     let authorName: String
     let content: String
@@ -153,10 +153,10 @@ struct PersonalizedFeedEngine {
     }
 
     static func recentMessages(
-        from messages: [ChatMessage],
+        from messages: [FeedMessage],
         excludingAuthor currentUserName: String,
         limit: Int = 5
-    ) -> [ChatMessage] {
+    ) -> [FeedMessage] {
         messages
             .filter { $0.authorName != currentUserName }
             .sorted { $0.createdDate > $1.createdDate }
@@ -180,7 +180,7 @@ struct PersonalizedFeedEngine {
     ///   4. Unread notifications               → medium
     ///   5. Recent journal entries             → low
     static func buildPersonalizedFeed(
-        messages: [ChatMessage],
+        messages: [FeedMessage],
         events: [FamilyEvent],
         albums: [Album],
         notifications: [AppNotification],
@@ -520,10 +520,10 @@ private struct EventCard: View {
 // MARK: - Recent Messages Section  (mirrors Home.jsx Recent Messages block)
 
 struct RecentMessagesSection: View {
-    let messages: [ChatMessage]
+    let messages: [FeedMessage]
     let currentUserName: String
 
-    private var recent: [ChatMessage] {
+    private var recent: [FeedMessage] {
         PersonalizedFeedEngine.recentMessages(
             from: messages,
             excludingAuthor: currentUserName,
@@ -548,7 +548,7 @@ struct RecentMessagesSection: View {
 }
 
 private struct MessageCard: View {
-    let message: ChatMessage
+    let message: FeedMessage
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -796,146 +796,4 @@ private struct SectionHeader: View {
         }
         .padding(.horizontal)
     }
-}
-
-// MARK: - Enhanced Home Tab
-// Drop-in replacement (or companion) to HomeTab in HomePageView.swift.
-// Wire up real data from your API layer; sample data shown in preview below.
-
-struct EnhancedHomeTab: View {
-    @EnvironmentObject var appState: AppState
-    @State private var newPost = ""
-
-    // Inject real data from your API layer
-    var messages: [ChatMessage] = []
-    var albums: [Album] = []
-    var notifications: [AppNotification] = []
-    var journalEntries: [JournalEntry] = []
-
-    private var feedResult: (items: [FeedItem], quickActions: [QuickAction], sectionPriorities: SectionPriorities) {
-        PersonalizedFeedEngine.buildPersonalizedFeed(
-            messages: messages,
-            events: appState.events,
-            albums: albums,
-            notifications: notifications,
-            journalEntries: journalEntries,
-            currentUserName: appState.currentUser?.name ?? ""
-        )
-    }
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                Color(.systemGroupedBackground).ignoresSafeArea()
-
-                ScrollView {
-                    VStack(spacing: 20) {
-
-                        // 1. Greeting + avatar  (from Home.jsx top section)
-                        GreetingHeaderView(user: appState.currentUser)
-
-                        // 2. Family banner  (from Home.jsx Family Banner card)
-                        FamilyBannerCard(familyName: appState.currentFamily?.name ?? "Our Family")
-
-                        // 3. Quick links  (from Home.jsx Quick Access Icons)
-                        QuickLinksRow()
-
-                        // 4. Stats (from original HomeTab – kept as-is)
-                        QuickStatsView()
-                            .padding(.horizontal)
-
-                        // 5. Personalized feed  (from getPersonalizedFeed.ts top_updates)
-                        PersonalizedFeedSection(items: feedResult.items)
-
-                        // 6. Quick actions  (from getPersonalizedFeed.ts quick_actions)
-                        QuickActionsRow(actions: feedResult.quickActions)
-
-                        // 7. Upcoming events  (from Home.jsx + getPersonalizedFeed.ts)
-                        UpcomingEventsSection(events: appState.events)
-
-                        // 8. Post composer (from original HomeTab – kept as-is)
-                        PostComposerView(newPost: $newPost, onPost: addPost)
-                            .padding(.horizontal)
-
-                        // 9. Feed / Posts (from original HomeTab)
-                        LazyVStack(spacing: 12) {
-                            ForEach(appState.posts.sorted { $0.timestamp > $1.timestamp }) { post in
-                                PostCard(post: post)
-                            }
-                        }
-                        .padding(.horizontal)
-
-                        // 10. Recent messages  (from Home.jsx Recent Messages)
-                        RecentMessagesSection(
-                            messages: messages,
-                            currentUserName: appState.currentUser?.name ?? ""
-                        )
-
-                        // 11. Photo memories  (from Home.jsx Photo Memories)
-                        PhotoMemoriesSection(albums: albums)
-
-                        Spacer(minLength: 20)
-                    }
-                    .padding(.vertical, 8)
-                }
-            }
-            .navigationBarHidden(true)
-        }
-    }
-
-    private func addPost() {
-        guard !newPost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let post = FamilyPost(
-            id: UUID().uuidString,
-            authorName: appState.currentUser?.name ?? "Unknown",
-            content: newPost,
-            timestamp: Date()
-        )
-        appState.posts.append(post)
-        newPost = ""
-    }
-}
-
-// MARK: - Preview
-
-#Preview("Enhanced Home") {
-    let state: AppState = {
-        let s = AppState()
-        s.isAuthenticated = true
-        s.currentUser = User(id: "1", name: "Lauryn Smeester", email: "lauryn@example.com", familyId: "f1", role: .admin)
-        s.currentFamily = Family(id: "f1", name: "The Smeester Family", members: [
-            User(id: "1", name: "Lauryn Smeester", email: "lauryn@example.com", familyId: "f1", role: .admin),
-            User(id: "2", name: "Mom",             email: "mom@example.com",    familyId: "f1", role: .member)
-        ])
-        s.posts = [
-            FamilyPost(id: "p1", authorName: "Mom",            content: "So excited for the reunion!", timestamp: Date()),
-            FamilyPost(id: "p2", authorName: "Lauryn Smeester",content: "Can't wait!",                 timestamp: Date().addingTimeInterval(-3600))
-        ]
-        s.events = [
-            FamilyEvent(id: "e1", title: "Family Reunion",   date: Date().addingTimeInterval(86400 * 3), createdBy: "Mom"),
-            FamilyEvent(id: "e2", title: "Mom's Birthday",   date: Date().addingTimeInterval(86400 * 6), createdBy: "Lauryn"),
-            FamilyEvent(id: "e3", title: "Grandpa's Visit",  date: Date().addingTimeInterval(86400 * 14), createdBy: "Mom")
-        ]
-        return s
-    }()
-
-    let sampleMessages: [ChatMessage] = [
-        ChatMessage(id: "m1", authorName: "Mom",  content: "Did you see Grandpa's photos?",     createdDate: Date().addingTimeInterval(-1800)),
-        ChatMessage(id: "m2", authorName: "Dad",  content: "Dinner at 7 tonight, everyone in!", createdDate: Date().addingTimeInterval(-7200))
-    ]
-
-    let sampleAlbums: [Album] = [
-        Album(id: "a1", title: "Summer 2025",   coverImage: nil),
-        Album(id: "a2", title: "Christmas",     coverImage: nil),
-        Album(id: "a3", title: "Graduation",    coverImage: nil),
-        Album(id: "a4", title: "Beach Trip",    coverImage: nil)
-    ]
-
-    return EnhancedHomeTab(
-        messages: sampleMessages,
-        albums: sampleAlbums,
-        notifications: [],
-        journalEntries: []
-    )
-    .environmentObject(state)
 }

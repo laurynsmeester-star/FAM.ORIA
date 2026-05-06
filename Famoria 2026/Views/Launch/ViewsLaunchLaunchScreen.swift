@@ -23,23 +23,27 @@ struct LaunchScreen: View {
             .ignoresSafeArea()
             
             VStack(spacing: 30) {
+                
                 // App logo or image
-                Image(systemName: "house.fill")
+                Image("Logo1")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 120, height: 120)
-                    .foregroundColor(.white)
-                    .scaleEffect(animate ? 1.1 : 0.8)
+                    .frame(width: 320, height: 320)
+                    .foregroundColor(.black)
+                    .scaleEffect(animate ? 1.5 : 0.5)
                     .opacity(animate ? 1 : 0.5)
+
+            
                 
                 Text("Famoria")
-                    .font(.system(size: 48, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
+                    .font(.custom("SnellRoundhand-Bold", size: 48).italic()) // Cursive font
+                    .foregroundColor(Color(red: 0, green: 0.4, blue: 0))
                     .opacity(animate ? 1 : 0)
+
                 
                 Text("Your Family, Connected")
                     .font(.headline)
-                    .foregroundColor(.white.opacity(0.9))
+                    .foregroundColor(Color(red: 0, green: 0.4, blue: 0))
                     .opacity(animate ? 1 : 0)
             }
         }
