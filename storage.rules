@@ -1,0 +1,51 @@
+rules_version = '2';
+
+// Famoria Cloud Storage security rules.
+//
+// To deploy: from this directory run `firebase deploy --only storage`
+// (or paste this file into Firebase Console → Storage → Rules).
+//
+// Required for: album photo uploads, chat image attachments, document
+// uploads, and user avatars. If these are missing, putData will appear to
+// succeed but downloadURL will throw "Object does not exist".
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Limit uploads to images <= 10 MB.
+    function isReasonableImage() {
+      return request.resource.size < 10 * 1024 * 1024
+          && request.resource.contentType.matches('image/.*');
+    }
+
+    // Album photos — any signed-in user can read/write under famoria_albums.
+    match /famoria_albums/{albumId}/{filename} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && (request.resource == null || isReasonableImage());
+    }
+
+    // Chat image attachments.
+    match /chat_images/{chatId}/{filename} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && (request.resource == null || isReasonableImage());
+    }
+
+    // Document uploads (any file type, up to 25 MB).
+    match /famoria_documents/{userId}/{filename} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() &&
+        (request.resource == null || request.resource.size < 25 * 1024 * 1024);
+    }
+
+    // User avatars.
+    match /avatars/{userId}/{filename} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.auth.uid == userId &&
+        (request.resource == null || isReasonableImage());
+    }
+  }
+}

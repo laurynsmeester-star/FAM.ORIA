@@ -3,11 +3,18 @@ import PhotosUI
 
 struct ChatDetailView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.dismiss) private var dismiss
     let chat: Chat
     @State private var messageText = ""
     @State private var replyingTo: ChatMessage? = nil
-    @State private var selectedPhoto: PhotosPickerItem? = nil
+    @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var showReactionPicker: ChatMessage? = nil
+    @State private var messageToDelete: ChatMessage? = nil
+    @State private var showDeleteConfirm = false
+    @State private var showMentionPicker = false
+    @State private var showAttachMenu = false
+    @State private var showPhotoPicker = false
+    @State private var showCameraPicker = false
     @FocusState private var isInputActive: Bool
 
     private var messages: [ChatMessage] {
@@ -33,16 +40,58 @@ struct ChatDetailView: View {
         return nil
     }
 
+    // MARK: - Mention Items
+
+    private struct MentionItem: Identifiable {
+        let id: String
+        let name: String
+        let icon: String
+        let color: Color
+        enum Kind { case person, event, album }
+        let kind: Kind
+    }
+
+    private var mentionItems: [MentionItem] {
+        var items: [MentionItem] = []
+        for p in chat.participants where p.id != currentUserId {
+            items.append(MentionItem(id: p.id, name: p.name, icon: "person.fill", color: .blue, kind: .person))
+        }
+        for event in appState.events {
+            items.append(MentionItem(id: "event-\(event.id)", name: event.title, icon: "calendar", color: .orange, kind: .event))
+        }
+        return items
+    }
+
+    private var filteredMentionItems: [MentionItem] {
+        guard let atRange = messageText.range(of: "@", options: .backwards) else { return mentionItems }
+        let query = String(messageText[atRange.upperBound...]).lowercased()
+        if query.isEmpty { return mentionItems }
+        return mentionItems.filter { $0.name.lowercased().contains(query) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             messagesList
             typingIndicatorBar
             replyBar
+            if showMentionPicker {
+                mentionPicker
+            }
             inputBar
         }
         .navigationTitle(chatTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button {
+                    dismiss()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                        Text("Back")
+                    }
+                }
+            }
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
                     Text(chatTitle)
@@ -66,6 +115,23 @@ struct ChatDetailView: View {
             if let msg = showReactionPicker {
                 reactionOverlay(for: msg)
             }
+        }
+        .alert("Delete Message", isPresented: $showDeleteConfirm) {
+            Button("Cancel", role: .cancel) { messageToDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let msg = messageToDelete {
+                    Task { try? await appState.deleteMessage(msg.id, in: chat.id) }
+                    messageToDelete = nil
+                }
+            }
+        } message: {
+            Text("Are you sure you want to delete this message?")
+        }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotos, maxSelectionCount: 5, matching: .images)
+        .onChange(of: selectedPhotos) { _, newItems in
+            guard !newItems.isEmpty else { return }
+            sendPhotos(newItems)
+            selectedPhotos = []
         }
     }
 
@@ -108,15 +174,17 @@ struct ChatDetailView: View {
                                     } label: {
                                         Label("React", systemImage: "face.smiling")
                                     }
+                                    if msg.senderId == currentUserId {
+                                        Divider()
+                                        Button(role: .destructive) {
+                                            messageToDelete = msg
+                                            showDeleteConfirm = true
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
                                 }
                         }
-                    }
-
-                    // Read receipt at bottom
-                    if let lastSelfMsg = messages.last(where: { $0.senderId == currentUserId }) {
-                        readReceipt(for: lastSelfMsg)
-                            .padding(.trailing, 16)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                 }
                 .padding(.vertical, 8)
@@ -188,7 +256,6 @@ struct ChatDetailView: View {
                         .padding(.leading, 8)
                 }
 
-                // Reply context
                 if let replyContent = msg.replyToContent, let replySender = msg.replyToSenderName {
                     HStack(spacing: 4) {
                         Rectangle()
@@ -211,7 +278,6 @@ struct ChatDetailView: View {
                     .cornerRadius(12)
                 }
 
-                // Image message
                 if msg.messageType == .image, let urlString = msg.imageURL, let url = URL(string: urlString) {
                     AsyncImage(url: url) { phase in
                         switch phase {
@@ -230,24 +296,14 @@ struct ChatDetailView: View {
                     }
                 }
 
-                // Text content
                 if !msg.content.isEmpty && msg.messageType != .image {
-                    Text(msg.content)
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 14)
-                        .background(isSelf ? Color.blue : Color(.secondarySystemBackground))
-                        .foregroundColor(isSelf ? .white : .primary)
-                        .cornerRadius(20, corners: isSelf
-                                       ? [.topLeft, .topRight, .bottomLeft]
-                                       : [.topLeft, .topRight, .bottomRight])
+                    styledMessageContent(msg.content, isSelf: isSelf)
                 }
 
-                // Reactions
                 if !msg.reactions.isEmpty {
                     reactionsView(for: msg)
                 }
 
-                // Time
                 Text(msg.timestamp, style: .time)
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -258,6 +314,27 @@ struct ChatDetailView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 1)
+    }
+
+    private func styledMessageContent(_ content: String, isSelf: Bool) -> some View {
+        let parts = parseMentions(content)
+        var text = Text("")
+        for part in parts {
+            if part.isMention {
+                text = text + Text(part.text).bold().foregroundColor(isSelf ? .white.opacity(0.9) : .blue)
+            } else {
+                text = text + Text(part.text)
+            }
+        }
+
+        return text
+            .padding(.vertical, 8)
+            .padding(.horizontal, 14)
+            .background(isSelf ? Color.blue : Color(.secondarySystemBackground))
+            .foregroundColor(isSelf ? .white : .primary)
+            .cornerRadius(20, corners: isSelf
+                           ? [.topLeft, .topRight, .bottomLeft]
+                           : [.topLeft, .topRight, .bottomRight])
     }
 
     private func avatarCircle(for msg: ChatMessage) -> some View {
@@ -331,27 +408,6 @@ struct ChatDetailView: View {
         }
     }
 
-    // MARK: - Read Receipt
-
-    private func readReceipt(for msg: ChatMessage) -> some View {
-        HStack(spacing: 3) {
-            if msg.readAt != nil {
-                Text("Read")
-                    .font(.caption2)
-                    .foregroundColor(.blue)
-            } else if msg.deliveredAt != nil {
-                Text("Delivered")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            } else {
-                Text("Sent")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding(.bottom, 4)
-    }
-
     // MARK: - Typing Indicator Bar
 
     @ViewBuilder
@@ -411,13 +467,84 @@ struct ChatDetailView: View {
         }
     }
 
+    // MARK: - Mention Picker
+
+    private var mentionPicker: some View {
+        VStack(spacing: 0) {
+            Divider()
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(filteredMentionItems) { item in
+                        Button {
+                            insertMention(item)
+                        } label: {
+                            HStack(spacing: 10) {
+                                ZStack {
+                                    Circle()
+                                        .fill(item.color.opacity(0.15))
+                                        .frame(width: 30, height: 30)
+                                    Image(systemName: item.icon)
+                                        .font(.caption)
+                                        .foregroundColor(item.color)
+                                }
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(item.name)
+                                        .font(.subheadline)
+                                        .foregroundColor(.primary)
+                                    Text(mentionKindLabel(item.kind))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
+                        }
+                        Divider().padding(.leading, 56)
+                    }
+                }
+            }
+            .frame(maxHeight: 180)
+        }
+        .background(Color(.secondarySystemBackground))
+    }
+
+    private func mentionKindLabel(_ kind: MentionItem.Kind) -> String {
+        switch kind {
+        case .person: return "Person"
+        case .event: return "Event"
+        case .album: return "Album"
+        }
+    }
+
+    private func insertMention(_ item: MentionItem) {
+        if let atRange = messageText.range(of: "@", options: .backwards) {
+            messageText.replaceSubrange(atRange.lowerBound..., with: "@\(item.name) ")
+        } else {
+            messageText += "@\(item.name) "
+        }
+        showMentionPicker = false
+    }
+
     // MARK: - Input Bar
 
     private var inputBar: some View {
         HStack(spacing: 8) {
-            // Photo picker
-            PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                Image(systemName: "photo.fill")
+            Menu {
+                Button {
+                    showPhotoPicker = true
+                } label: {
+                    Label("Photo Library", systemImage: "photo.on.rectangle")
+                }
+                Button {
+                    messageText += "@"
+                    showMentionPicker = true
+                    isInputActive = true
+                } label: {
+                    Label("Mention", systemImage: "at")
+                }
+            } label: {
+                Image(systemName: "plus.circle.fill")
                     .font(.title3)
                     .foregroundColor(.blue)
             }
@@ -431,6 +558,11 @@ struct ChatDetailView: View {
                 .cornerRadius(20)
                 .onChange(of: messageText) {
                     Task { try? await appState.setTyping(!messageText.isEmpty, in: chat.id) }
+                    if messageText.hasSuffix("@") {
+                        showMentionPicker = true
+                    } else if !messageText.contains("@") {
+                        showMentionPicker = false
+                    }
                 }
 
             Button {
@@ -463,6 +595,37 @@ struct ChatDetailView: View {
         }
         messageText = ""
         replyingTo = nil
+        showMentionPicker = false
+    }
+
+    private func sendPhotos(_ items: [PhotosPickerItem]) {
+        Task {
+            for item in items {
+                guard let data = try? await item.loadTransferable(type: Data.self),
+                      let image = UIImage(data: data) else { continue }
+
+                let storage = FirebaseStorage.Storage.storage()
+                let filename = "\(UUID().uuidString).jpg"
+                let ref = storage.reference().child("chat_images/\(chat.id)/\(filename)")
+
+                guard let jpegData = image.jpegData(compressionQuality: 0.75) else { continue }
+
+                let metadata = FirebaseStorage.StorageMetadata()
+                metadata.contentType = "image/jpeg"
+
+                do {
+                    _ = try await ref.putDataAsync(jpegData, metadata: metadata)
+                    let url = try await ref.downloadURL()
+
+                    try? await appState.sendImageMessage(
+                        to: chat.id,
+                        imageURL: url.absoluteString
+                    )
+                } catch {
+                    print("[ChatDetail] Photo upload error: \(error)")
+                }
+            }
+        }
     }
 
     // MARK: - Helpers
@@ -480,6 +643,47 @@ struct ChatDetailView: View {
         let current = messages[index]
         let previous = messages[index - 1]
         return !Calendar.current.isDate(current.timestamp, inSameDayAs: previous.timestamp)
+    }
+
+    private struct TextPart {
+        let text: String
+        let isMention: Bool
+    }
+
+    private func parseMentions(_ content: String) -> [TextPart] {
+        var parts: [TextPart] = []
+        var allMentionNames = Set(chat.participants.map { "@\($0.name)" })
+        for event in appState.events {
+            allMentionNames.insert("@\(event.title)")
+        }
+        var remaining = content
+
+        while !remaining.isEmpty {
+            if let atRange = remaining.range(of: "@") {
+                if atRange.lowerBound > remaining.startIndex {
+                    parts.append(TextPart(text: String(remaining[remaining.startIndex..<atRange.lowerBound]), isMention: false))
+                }
+
+                let afterAt = remaining[atRange.lowerBound...]
+                var matched = false
+                for name in allMentionNames.sorted(by: { $0.count > $1.count }) {
+                    if afterAt.hasPrefix(name) {
+                        parts.append(TextPart(text: name, isMention: true))
+                        remaining = String(afterAt.dropFirst(name.count))
+                        matched = true
+                        break
+                    }
+                }
+                if !matched {
+                    parts.append(TextPart(text: "@", isMention: false))
+                    remaining = String(afterAt.dropFirst())
+                }
+            } else {
+                parts.append(TextPart(text: remaining, isMention: false))
+                break
+            }
+        }
+        return parts
     }
 }
 

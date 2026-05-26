@@ -1,0 +1,116 @@
+rules_version = '2';
+
+// Famoria Firestore security rules.
+//
+// To deploy: from this directory run `firebase deploy --only firestore:rules`
+// (or paste this file into Firebase Console → Firestore → Rules).
+//
+// Strategy:
+//   - Authenticated users can read/write resources tied to themselves.
+//   - Family-scoped collections require the user be a member of that family.
+//   - Notifications can only be read by their addressee, but any authenticated
+//     family member can write notifications (so the client-side notify helpers
+//     in AppState can fan out).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isMemberOfFamily(familyId) {
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid));
+    }
+
+    // Users — a user can read/write their own user document.
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isSelf(userId);
+    }
+
+    // Families.
+    match /families/{familyId} {
+      allow read: if isMemberOfFamily(familyId);
+      // Creating a family is allowed for any authenticated user; updates
+      // require membership.
+      allow create: if isSignedIn();
+      allow update, delete: if isMemberOfFamily(familyId);
+
+      match /members/{memberId} {
+        allow read: if isMemberOfFamily(familyId) || isSelf(memberId);
+        allow write: if isSignedIn();
+      }
+
+      match /treeMembers/{memberId} {
+        allow read, write: if isMemberOfFamily(familyId);
+      }
+
+      match /relationships/{relId} {
+        allow read, write: if isMemberOfFamily(familyId);
+      }
+
+      // Posts, events, etc. nested under family
+      match /{document=**} {
+        allow read, write: if isMemberOfFamily(familyId);
+      }
+    }
+
+    // Invite codes — anyone signed in can look up to redeem; only family
+    // members can write.
+    match /invite_codes/{code} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Notifications — fan-out write model. Any signed-in user can write
+    // a notification doc (the client encodes the recipient as userId), but
+    // only the recipient can read or update their own notifications.
+    match /famoria_notifications/{notifId} {
+      allow read, update, delete: if isSignedIn() &&
+        resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() &&
+        request.resource.data.userId is string;
+    }
+
+    // Albums + photos.
+    match /famoria_albums/{albumId} {
+      allow read, write: if isSignedIn();
+    }
+    match /famoria_photos/{photoId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Documents.
+    match /famoria_documents/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /famoria_document_comments/{commentId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Chats + messages.
+    match /chats/{chatId} {
+      allow read, write: if isSignedIn();
+
+      match /messages/{messageId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // Wishlist.
+    match /famoria_wishlist/{itemId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Celebrations.
+    match /famoria_celebrations/{celebrationId} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}

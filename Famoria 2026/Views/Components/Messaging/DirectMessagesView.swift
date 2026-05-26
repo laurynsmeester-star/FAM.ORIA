@@ -1,12 +1,13 @@
 import SwiftUI
-import Combine
 
-/// Main messaging view — lists all DM and group chat threads.
 struct DirectMessagesView: View {
     @EnvironmentObject var appState: AppState
     @State private var showNewChat = false
     @State private var showNewGroup = false
+    @State private var selectedChatId: String?
     @State private var searchText = ""
+    @State private var chatToDelete: Chat?
+    @State private var showDeleteConfirm = false
 
     private var filteredChats: [Chat] {
         if searchText.isEmpty { return appState.chats }
@@ -17,22 +18,71 @@ struct DirectMessagesView: View {
         }
     }
 
+    private var selectedChat: Chat? {
+        guard let id = selectedChatId else { return nil }
+        return appState.chats.first { $0.id == id }
+    }
+
     var body: some View {
-        NavigationStack {
-            Group {
-                if appState.chats.isEmpty {
-                    emptyState
-                } else {
-                    chatList
+        Group {
+            if appState.chats.isEmpty {
+                emptyState
+            } else {
+                chatList
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if !appState.chats.isEmpty {
+                Menu {
+                    Button {
+                        showNewChat = true
+                    } label: {
+                        Label("New Message", systemImage: "plus.message")
+                    }
+                    Button {
+                        showNewGroup = true
+                    } label: {
+                        Label("New Group", systemImage: "person.3")
+                    }
+                } label: {
+                    Image(systemName: "plus.message.fill")
+                        .font(.title2)
+                        .foregroundColor(.white)
+                        .frame(width: 56, height: 56)
+                        .background(Color.blue)
+                        .clipShape(Circle())
+                        .shadow(color: .blue.opacity(0.3), radius: 8, y: 4)
+                }
+                .padding(.trailing, 20)
+                .padding(.bottom, 20)
+            }
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { selectedChatId != nil },
+            set: { if !$0 { selectedChatId = nil } }
+        )) {
+            if let chat = selectedChat {
+                NavigationStack {
+                    ChatDetailView(chat: chat)
                 }
             }
-            .toolbar(.hidden, for: .navigationBar)
-            .sheet(isPresented: $showNewChat) {
-                NewChatView()
+        }
+        .sheet(isPresented: $showNewChat) {
+            NewChatView()
+        }
+        .sheet(isPresented: $showNewGroup) {
+            NewGroupChatView()
+        }
+        .alert("Delete Conversation", isPresented: $showDeleteConfirm) {
+            Button("Cancel", role: .cancel) { chatToDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let chat = chatToDelete {
+                    Task { try? await appState.deleteChat(chat.id) }
+                    chatToDelete = nil
+                }
             }
-            .sheet(isPresented: $showNewGroup) {
-                NewGroupChatView()
-            }
+        } message: {
+            Text("Are you sure you want to delete this conversation? This cannot be undone.")
         }
         .onAppear {
             appState.observeChats()
@@ -45,21 +95,22 @@ struct DirectMessagesView: View {
     private var chatList: some View {
         List {
             ForEach(filteredChats) { chat in
-                NavigationLink(destination: ChatDetailView(chat: chat)) {
+                Button {
+                    selectedChatId = chat.id
+                } label: {
                     ChatRowView(chat: chat, currentUserId: appState.currentUser?.id)
                 }
             }
-            .onDelete(perform: deleteChats)
+            .onDelete(perform: confirmDeleteChat)
         }
         .listStyle(.plain)
         .searchable(text: $searchText, prompt: "Search conversations")
     }
 
-    private func deleteChats(at offsets: IndexSet) {
-        // Placeholder — wire to Firestore deletion if needed
-        for index in offsets {
-            let _ = filteredChats[index]
-        }
+    private func confirmDeleteChat(at offsets: IndexSet) {
+        guard let index = offsets.first else { return }
+        chatToDelete = filteredChats[index]
+        showDeleteConfirm = true
     }
 
     // MARK: - Empty State
@@ -151,17 +202,9 @@ struct ChatRowView: View {
 
     private var contentView: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(displayName)
-                    .font(.headline)
-                    .lineLimit(1)
-                Spacer()
-                if let lastMsg = chat.lastMessage {
-                    Text(lastMsg.timestamp, style: .relative)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
+            Text(displayName)
+                .font(.headline)
+                .lineLimit(1)
 
             HStack {
                 Group {
