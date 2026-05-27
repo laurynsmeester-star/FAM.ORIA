@@ -93,6 +93,18 @@ struct RecipesView: View {
                 }
                 .onAppear { store.startListening() }
                 .onDisappear { store.stopListening() }
+                .alert(
+                    "Couldn't save",
+                    isPresented: Binding(
+                        get: { store.errorMessage != nil },
+                        set: { if !$0 { store.errorMessage = nil } }
+                    ),
+                    presenting: store.errorMessage
+                ) { _ in
+                    Button("OK", role: .cancel) {}
+                } message: { message in
+                    Text(message)
+                }
         }
     }
 

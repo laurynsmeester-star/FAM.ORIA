@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SwiftUI
 import Combine
 import FirebaseFirestore
@@ -35,6 +36,9 @@ final class AppState: ObservableObject {
     @Published var pendingInvites: [Invite] = []
     @Published var deepLinkInviteID: String? = nil
     @Published var deepLinkPage: FamoriaPage? = nil
+    /// When set alongside `deepLinkPage = .events`, the calendar should jump to and
+    /// select this date. Cleared by the calendar after it consumes the value.
+    @Published var pendingEventDate: Date? = nil
 
     @Published var events: [FamilyEvent] = []
     @Published var posts: [FamilyPost] = []
@@ -48,65 +52,172 @@ final class AppState: ObservableObject {
     private var notificationsListener: ListenerRegistration?
 
     func startListeningToNotifications() {
+        guard let userId = currentUser?.id else {
+            Log.notifications.debug("cannot start listener: no currentUser")
+            return
+        }
+        Log.notifications.debug("starting listener for userId=\(userId, privacy: .private)")
         notificationsListener?.remove()
         notificationsListener = db.collection("famoria_notifications")
-            .order(by: "createdDate", descending: true)
-            .limit(to: 100)
+            .whereField("userId", isEqualTo: userId)
             .addSnapshotListener { [weak self] snapshot, error in
-                guard let self, let snapshot else { return }
-                self.notifications = snapshot.documents.compactMap { doc in
-                    var data = doc.data()
-                    data["id"] = doc.documentID
-                    return try? Firestore.Decoder().decode(FamoriaNotification.self, from: data)
+                if let error {
+                    Log.notifications.error("listener error: \(error.localizedDescription, privacy: .public)")
+                    return
                 }
+                guard let self, let snapshot else { return }
+                Log.notifications.debug("snapshot received: \(snapshot.documents.count) docs")
+                self.notifications = snapshot.documents.compactMap { doc in
+                    Self.decodeNotification(id: doc.documentID, data: doc.data())
+                }.sorted { $0.createdDate > $1.createdDate }
             }
+    }
+
+    /// Manual decoder that's resilient to Firestore Timestamp/Date variations.
+    /// Avoids silent `try?` failures from `Firestore.Decoder()` that previously
+    /// caused notifications to be dropped on the floor.
+    private static func decodeNotification(id docId: String, data: [String: Any]) -> FamoriaNotification? {
+        guard
+            let userId = data["userId"] as? String,
+            let title  = data["title"]  as? String,
+            let body   = data["body"]   as? String,
+            let typeRaw = data["type"]  as? String,
+            let type   = FamoriaNotificationType(rawValue: typeRaw)
+        else {
+            Log.notifications.error("decode failed for doc=\(docId, privacy: .public)")
+            return nil
+        }
+        let isRead = data["isRead"] as? Bool ?? false
+        let createdDate: Date
+        if let ts = data["createdDate"] as? Timestamp {
+            createdDate = ts.dateValue()
+        } else if let d = data["createdDate"] as? Date {
+            createdDate = d
+        } else {
+            createdDate = Date()
+        }
+        return FamoriaNotification(
+            id: docId,
+            userId: userId,
+            title: title,
+            body: body,
+            type: type,
+            isRead: isRead,
+            createdDate: createdDate
+        )
     }
 
     var unreadNotificationCount: Int {
         notifications.filter { !$0.isRead }.count
     }
 
+    var unreadMessagesCount: Int {
+        chats.reduce(0) { $0 + $1.unreadCount }
+    }
+
     func markNotificationRead(_ id: String) {
-        db.collection("famoria_notifications").document(id).updateData(["isRead": true])
+        db.collection("famoria_notifications").document(id).updateData(["isRead": true]) { err in
+            if let err {
+                Log.notifications.error("markNotificationRead failed: \(err.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     func markAllNotificationsRead() {
+        let batch = db.batch()
         for notif in notifications where !notif.isRead {
-            db.collection("famoria_notifications").document(notif.id).updateData(["isRead": true])
+            let ref = db.collection("famoria_notifications").document(notif.id)
+            batch.updateData(["isRead": true], forDocument: ref)
+        }
+        batch.commit { err in
+            if let err {
+                Log.notifications.error("markAllNotificationsRead failed: \(err.localizedDescription, privacy: .public)")
+            }
         }
     }
 
     func removeNotification(_ id: String) {
-        db.collection("famoria_notifications").document(id).delete()
+        db.collection("famoria_notifications").document(id).delete { err in
+            if let err {
+                Log.notifications.error("removeNotification failed: \(err.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
-    func addNotification(title: String, body: String, type: FamoriaNotificationType) {
-        let notification = FamoriaNotification(
-            id: UUID().uuidString,
-            title: title,
-            body: body,
-            type: type,
-            isRead: false,
-            createdDate: Date()
-        )
-        try? db.collection("famoria_notifications").document(notification.id).setData(from: notification)
+    func notifyFamilyMembers(title: String, body: String, type: FamoriaNotificationType, excludeUserId: String? = nil) {
+        guard let members = currentFamily?.members else {
+            Log.notifications.debug("notifyFamilyMembers skipped — no currentFamily")
+            return
+        }
+        let targets = members.filter { $0.id != excludeUserId }
+        Log.notifications.debug("writing \(targets.count) notification(s): \(title, privacy: .public)")
+        for member in targets {
+            writeNotification(userId: member.id, title: title, body: body, type: type)
+        }
+    }
+
+    func notifyUsers(_ userIds: [String], title: String, body: String, type: FamoriaNotificationType, excludeUserId: String? = nil) {
+        let targets = userIds.filter { $0 != excludeUserId }
+        Log.notifications.debug("writing \(targets.count) notification(s) to specific users: \(title, privacy: .public)")
+        for uid in targets {
+            writeNotification(userId: uid, title: title, body: body, type: type)
+        }
+    }
+
+    /// Writes a notification document using an explicit dictionary so the
+    /// schema is stable regardless of Codable encoding behaviour. Surfaces
+    /// failures to the console rather than swallowing them.
+    private func writeNotification(userId: String, title: String, body: String, type: FamoriaNotificationType) {
+        let docId = UUID().uuidString
+        let payload: [String: Any] = [
+            "id": docId,
+            "userId": userId,
+            "title": title,
+            "body": body,
+            "type": type.rawValue,
+            "isRead": false,
+            "createdDate": Timestamp(date: Date())
+        ]
+        db.collection("famoria_notifications").document(docId).setData(payload) { error in
+            if let error {
+                Log.notifications.error("write failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Debug helper: writes a notification addressed to the current user.
+    /// Used by the "Send Test Notification" button on the Profile screen so
+    /// the whole bell pipeline can be verified end-to-end without needing
+    /// a second device. Returns the error string on failure (or nil on
+    /// success) so the UI can show a result.
+    @discardableResult
+    func sendTestNotificationToSelf() async -> String? {
+        guard let user = currentUser else { return "Not signed in" }
+        let docId = UUID().uuidString
+        let payload: [String: Any] = [
+            "id": docId,
+            "userId": user.id,
+            "title": "Test notification",
+            "body": "If you can read this, your notification pipeline works.",
+            "type": FamoriaNotificationType.system.rawValue,
+            "isRead": false,
+            "createdDate": Timestamp(date: Date())
+        ]
+        return await withCheckedContinuation { continuation in
+            db.collection("famoria_notifications").document(docId).setData(payload) { error in
+                if let error {
+                    Log.notifications.error("test write failed: \(error.localizedDescription, privacy: .public)")
+                    continuation.resume(returning: error.localizedDescription)
+                } else {
+                    Log.notifications.debug("test write succeeded")
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
     }
     
     // Firestore instance
     private let db = Firestore.firestore()
-    
-    // Example Firestore usage snippet
-    func exampleFirestoreUsage() {
-        let docRef = db.collection("users").document("userID")
-        docRef.getDocument { (document, error) in
-            if let document = document, document.exists {
-                let dataDescription = document.data().map(String.init(describing:)) ?? "nil"
-                print("Document data: \(dataDescription)")
-            } else {
-                print("Document does not exist")
-            }
-        }
-    }
     
     // Services - use Firebase in production, StubAuthService for testing
     var auth: AuthService = FirebaseAuthService()
@@ -121,15 +232,11 @@ final class AppState: ObservableObject {
     private var chatsListener: ListenerRegistration?
     private var messagesListeners: [String: ListenerRegistration] = [:]
     
-    init() {
-        startListeningToNotifications()
-    }
+    init() {}
 
     /// Call on app launch to restore a persisted Firebase Auth session.
     func checkAuthState() {
         guard UserDefaults.standard.bool(forKey: "famoria.staySignedIn") != false else { return }
-        // Firebase Auth automatically persists the session.
-        // FirebaseAuthService.restoreSession can re-hydrate currentUser.
         if let authService = auth as? FirebaseAuthService {
             Task {
                 if let user = await authService.restoreSession() {
@@ -139,6 +246,7 @@ final class AppState: ObservableObject {
                         await loadFamilyData(familyId: familyId)
                     }
                     observeChats()
+                    startListeningToNotifications()
                 }
             }
         }
@@ -156,26 +264,56 @@ final class AppState: ObservableObject {
     }
     
     func handleSignIn(email: String, password: String) async throws {
-        let user = try await auth.signIn(email: email, password: password)
-        self.currentUser = user
-        self.isAuthenticated = true
-        
-        // Load user's family data if they have one
-        if let familyId = user.familyId {
-            await loadFamilyData(familyId: familyId)
+        Log.auth.debug("handleSignIn starting for email=\(email, privacy: .private)")
+        do {
+            let user = try await auth.signIn(email: email, password: password)
+            Log.auth.debug("handleSignIn: auth.signIn returned uid=\(user.id, privacy: .private) familyId=\(user.familyId ?? "<none>", privacy: .public)")
+            self.currentUser = user
+            self.isAuthenticated = true
+
+            if let familyId = user.familyId {
+                await loadFamilyData(familyId: familyId)
+            }
+
+            observeChats()
+            startListeningToNotifications()
+            Log.auth.debug("handleSignIn: completed, isAuthenticated=true")
+        } catch {
+            Self.logAuthError(error, label: "handleSignIn")
+            throw error
         }
-        
-        // Start observing chats
-        observeChats()
     }
-    
+
     func handleSignUp(name: String, email: String, password: String) async throws {
-        let user = try await auth.signUp(email: email, password: password, name: name)
-        self.currentUser = user
-        self.isAuthenticated = true
-        
-        // Start observing chats
-        observeChats()
+        Log.auth.debug("handleSignUp starting for email=\(email, privacy: .private)")
+        do {
+            let user = try await auth.signUp(email: email, password: password, name: name)
+            Log.auth.debug("handleSignUp: auth.signUp returned uid=\(user.id, privacy: .private)")
+            self.currentUser = user
+            self.isAuthenticated = true
+
+            observeChats()
+            startListeningToNotifications()
+            Log.auth.debug("handleSignUp: completed, isAuthenticated=true")
+        } catch {
+            Self.logAuthError(error, label: "handleSignUp")
+            throw error
+        }
+    }
+
+    /// Dumps a Firebase Auth error in detail, including the userInfo dictionary
+    /// (where Identity Toolkit puts the real cause for the catch-all 17999
+    /// "internal error" code). Use this when diagnosing auth failures.
+    private static func logAuthError(_ error: Error, label: String) {
+        let nsError = error as NSError
+        Log.auth.error("\(label, privacy: .public) FAILED: domain=\(nsError.domain, privacy: .public) code=\(nsError.code) desc=\(error.localizedDescription, privacy: .public)")
+        // Identity Toolkit stuffs the underlying HTTP response into userInfo.
+        // Logging it verbatim is the fastest way to find out whether the real
+        // cause is App Check, a missing API key, a disabled provider, etc.
+        Log.auth.error("\(label, privacy: .public) userInfo=\(String(describing: nsError.userInfo), privacy: .public)")
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            Log.auth.error("\(label, privacy: .public) underlying: domain=\(underlying.domain, privacy: .public) code=\(underlying.code) desc=\(underlying.localizedDescription, privacy: .public) userInfo=\(String(describing: underlying.userInfo), privacy: .public)")
+        }
     }
     
     func signOut() async {
@@ -194,7 +332,11 @@ final class AppState: ObservableObject {
             UserDefaults.standard.removeObject(forKey: "famoria.savedEmail")
         }
         
-        do { try await auth.signOut() } catch { print(error) }
+        do {
+            try await auth.signOut()
+        } catch {
+            Log.auth.error("Error signing out: \(error.localizedDescription, privacy: .public)")
+        }
         currentUser = nil
         currentFamily = nil
         isAuthenticated = false
@@ -228,15 +370,24 @@ final class AppState: ObservableObject {
               let user = currentUser else {
             throw AppStateError.noFamily
         }
-        
+
         let code = try await familyService.generateInviteCode(
             familyId: family.id,
+            familyName: family.name,
             createdBy: user.id
         )
-        
+
         return code
     }
-    
+
+    /// Fetches the latest valid invite code for the current family
+    func fetchLatestInviteCode() async throws -> String? {
+        guard let family = currentFamily else {
+            throw AppStateError.noFamily
+        }
+        return try await familyService.fetchLatestInviteCode(familyId: family.id)
+    }
+
     /// Validates and joins a family using an invite code
     func joinFamilyWithCode(_ code: String) async throws {
         guard let user = currentUser else {
@@ -272,30 +423,99 @@ final class AppState: ObservableObject {
             authorId: user.id,
             content: content
         )
-        
-        // Post will be updated via listener, but we can add it immediately for optimistic UI
+
         self.posts.insert(post, at: 0)
+
+        notifyFamilyMembers(
+            title: "\(user.name) posted an update",
+            body: String(content.prefix(80)),
+            type: .familyUpdate,
+            excludeUserId: user.id
+        )
     }
     
-    /// Creates a new event in the family calendar
-    func createEvent(title: String, date: Date) async throws {
+    /// Creates a new event in the family calendar. If `id` is provided, the
+    /// event is created with that document id (used when the caller has
+    /// already inserted a richer local representation under the same id).
+    /// V2 fields are persisted to Firestore so every family member sees them.
+    func createEvent(
+        title: String,
+        date: Date,
+        id: String? = nil,
+        endDate: Date? = nil,
+        startTime: Date? = nil,
+        endTime: Date? = nil,
+        location: String? = nil,
+        notes: String? = nil,
+        eventTypeRaw: String? = nil,
+        isRecurring: Bool? = nil
+    ) async throws {
         guard let family = currentFamily,
               let user = currentUser else {
             throw AppStateError.noFamily
         }
-        
+
         let event = try await contentService.createEvent(
             familyId: family.id,
             title: title,
             date: date,
-            createdBy: user.id
+            createdBy: user.id,
+            id: id,
+            endDate: endDate,
+            startTime: startTime,
+            endTime: endTime,
+            location: location,
+            notes: notes,
+            eventTypeRaw: eventTypeRaw,
+            isRecurring: isRecurring
         )
-        
-        // Event will be updated via listener
-        self.events.append(event)
-        self.events.sort { $0.date < $1.date }
+
+        // Avoid duplicating an event that the caller already inserted locally.
+        if let idx = events.firstIndex(where: { $0.id == event.id }) {
+            events[idx] = event
+        } else {
+            events.append(event)
+        }
+        events.sort { $0.date < $1.date }
+
+        let dateStr = date.formatted(date: .abbreviated, time: .shortened)
+        notifyFamilyMembers(
+            title: "\(user.name) created an event",
+            body: "\(title) — \(dateStr)",
+            type: .event,
+            excludeUserId: user.id
+        )
     }
-    
+
+    /// Pushes an event edit to Firestore so other family members see the change.
+    func updateEvent(
+        familyId: String,
+        eventId: String,
+        title: String? = nil,
+        date: Date? = nil,
+        endDate: Date? = nil,
+        startTime: Date? = nil,
+        endTime: Date? = nil,
+        location: String? = nil,
+        notes: String? = nil,
+        eventTypeRaw: String? = nil,
+        isRecurring: Bool? = nil
+    ) async throws {
+        try await contentService.updateEvent(
+            familyId: familyId,
+            eventId: eventId,
+            title: title,
+            date: date,
+            endDate: endDate,
+            startTime: startTime,
+            endTime: endTime,
+            location: location,
+            notes: notes,
+            eventTypeRaw: eventTypeRaw,
+            isRecurring: isRecurring
+        )
+    }
+
     /// Deletes a post
     func deletePost(_ post: FamilyPost) async throws {
         guard let family = currentFamily else {
@@ -349,11 +569,21 @@ final class AppState: ObservableObject {
             content: content,
             replyTo: replyTo
         )
-        
-        // Optimistic update
+
         var currentMessages = messagesByChat[chatId] ?? []
         currentMessages.append(message)
         messagesByChat[chatId] = currentMessages
+
+        if let chat = chats.first(where: { $0.id == chatId }) {
+            let recipientIds = chat.participants.map(\.id)
+            notifyUsers(
+                recipientIds,
+                title: "\(user.name) sent a message",
+                body: String(content.prefix(80)),
+                type: .message,
+                excludeUserId: user.id
+            )
+        }
     }
     
     /// Add a reaction to a message
@@ -390,6 +620,35 @@ final class AppState: ObservableObject {
         chats.append(chat)
     }
     
+    /// Send an image message
+    func sendImageMessage(to chatId: String, imageURL: String) async throws {
+        guard let user = currentUser else {
+            throw AppStateError.notAuthenticated
+        }
+        let message = try await chatService.sendImageMessage(
+            chatId: chatId,
+            senderId: user.id,
+            senderName: user.name,
+            imageURL: imageURL
+        )
+        var currentMessages = messagesByChat[chatId] ?? []
+        currentMessages.append(message)
+        messagesByChat[chatId] = currentMessages
+    }
+
+    /// Delete a message
+    func deleteMessage(_ messageId: String, in chatId: String) async throws {
+        try await chatService.deleteMessage(messageId: messageId, chatId: chatId)
+        messagesByChat[chatId]?.removeAll { $0.id == messageId }
+    }
+
+    /// Delete an entire chat
+    func deleteChat(_ chatId: String) async throws {
+        try await chatService.deleteChat(chatId: chatId)
+        chats.removeAll { $0.id == chatId }
+        messagesByChat.removeValue(forKey: chatId)
+    }
+
     /// Create a direct chat with one user
     func createDirectChat(with userId: String, userName: String) async throws {
         guard let user = currentUser else {
@@ -424,6 +683,20 @@ final class AppState: ObservableObject {
             }
         }
     }
+
+    /// Stop observing messages for a specific chat. Call from `onDisappear`
+    /// of the chat detail view to avoid accumulating Firestore listeners.
+    func stopObservingMessages(for chatId: String) {
+        messagesListeners[chatId]?.remove()
+        messagesListeners[chatId] = nil
+    }
+
+    /// Stop the global chat-list listener. Call from `onDisappear` of the
+    /// direct-messages list when it's no longer visible.
+    func stopObservingChats() {
+        chatsListener?.remove()
+        chatsListener = nil
+    }
     
     // MARK: - Data Loading
     
@@ -441,7 +714,7 @@ final class AppState: ObservableObject {
             // Set up real-time listeners
             observeLiveUpdates(familyId: familyId)
         } catch {
-            print("Error loading family data: \(error)")
+            Log.appState.error("Error loading family data: \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -510,12 +783,13 @@ final class AppState: ObservableObject {
     func remove(member: User) {
         guard let family = currentFamily else { return }
 
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
             do {
-                try await familyService.removeMember(userId: member.id, fromFamily: family.id)
+                try await self.familyService.removeMember(userId: member.id, fromFamily: family.id)
                 // Update will come through the listener
             } catch {
-                print("Error removing member: \(error)")
+                Log.appState.error("Error removing member: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

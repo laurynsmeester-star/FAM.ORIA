@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 
 struct AuthView: View {
     @EnvironmentObject var appState: AppState
@@ -8,6 +9,8 @@ struct AuthView: View {
     @State private var showFamilyAdminRegistration = false
     @State private var showGeneralUserRegistration = false
     @State private var showRegistrationPicker = false
+    @State private var signInError: String? = nil
+    @State private var isSigningIn = false
     
     var body: some View {
         ZStack {
@@ -51,14 +54,27 @@ struct AuthView: View {
                         .background(Color.white)
                         .cornerRadius(12)
                     
-                    Button(action: { Task { await signIn() } }) {
-                        Text("Sign In")
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.blue)
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        Task { await signIn() }
+                    }) {
+                        if isSigningIn {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.blue)
+                                .cornerRadius(12)
+                        } else {
+                            Text("Sign In")
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
+                        }
                     }
+                    .disabled(isSigningIn || email.isEmpty || password.isEmpty)
+                    .accessibilityLabel("Sign in")
                     
                     Button(action: { showRegistrationPicker = true }) {
                         Text("Create an account")
@@ -91,15 +107,29 @@ struct AuthView: View {
             GeneralUserRegistrationFlow()
                 .environmentObject(appState)
         }
+        .alert(
+            "Sign in failed",
+            isPresented: Binding(
+                get: { signInError != nil },
+                set: { if !$0 { signInError = nil } }
+            ),
+            presenting: signInError
+        ) { _ in
+            Button("OK", role: .cancel) {}
+        } message: { message in
+            Text(message)
+        }
     }
-    
+
+    @MainActor
     private func signIn() async {
+        isSigningIn = true
+        defer { isSigningIn = false }
         do {
             try await appState.handleSignIn(email: email, password: password)
         } catch {
-            // Handle authentication errors
-            print("Authentication error: \(error)")
-            // You can also add UI feedback here with an @State variable
+            Log.auth.error("Sign in failed: \(error.localizedDescription, privacy: .public)")
+            signInError = error.localizedDescription
         }
     }
 }

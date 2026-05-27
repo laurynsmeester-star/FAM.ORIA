@@ -98,7 +98,6 @@ final class AlbumStoreManager: ObservableObject {
 
         photosListener = db.collection("famoria_photos")
             .whereField("album_id", isEqualTo: albumId)
-            .order(by: "date_taken", descending: true)
             .addSnapshotListener { [weak self] snapshot, error in
                 guard let self else { return }
 
@@ -107,9 +106,9 @@ final class AlbumStoreManager: ObservableObject {
                     return
                 }
 
-                self.photos = snapshot?.documents.compactMap {
+                self.photos = (snapshot?.documents.compactMap {
                     try? $0.data(as: FamoriaPhoto.self)
-                } ?? []
+                } ?? []).sorted { $0.dateTaken > $1.dateTaken }
             }
     }
 
@@ -157,14 +156,42 @@ final class AlbumStoreManager: ObservableObject {
         let metadata = StorageMetadata()
         metadata.contentType = "image/jpeg"
 
-        _ = try await ref.putDataAsync(data, metadata: metadata)
-        let url = try await ref.downloadURL()
-        return url.absoluteString
+        do {
+            _ = try await ref.putDataAsync(data, metadata: metadata)
+        } catch {
+            let nsErr = error as NSError
+            print("[AlbumStore] putData failed: domain=\(nsErr.domain) code=\(nsErr.code) info=\(nsErr.userInfo)")
+            throw UploadError.uploadFailed(underlying: nsErr)
+        }
+
+        do {
+            let url = try await ref.downloadURL()
+            return url.absoluteString
+        } catch {
+            // "Object does not exist" after a putData that did not actually
+            // throw usually means a Storage rule or App Check rejected the
+            // write silently. Surface that clearly to the user.
+            let nsErr = error as NSError
+            print("[AlbumStore] downloadURL failed: domain=\(nsErr.domain) code=\(nsErr.code) info=\(nsErr.userInfo)")
+            throw UploadError.objectMissing(underlying: nsErr)
+        }
     }
 
     enum UploadError: LocalizedError {
         case compressionFailed
-        var errorDescription: String? { "Could not compress image for upload." }
+        case uploadFailed(underlying: NSError)
+        case objectMissing(underlying: NSError)
+
+        var errorDescription: String? {
+            switch self {
+            case .compressionFailed:
+                return "Could not compress image for upload."
+            case .uploadFailed(let err):
+                return "Upload failed: \(err.localizedDescription). Check Firebase Storage rules and your network connection."
+            case .objectMissing:
+                return "Upload was rejected by Firebase Storage. This usually means the Storage security rules don't allow writes to famoria_albums/, or App Check is blocking the request. Update your Storage rules in the Firebase Console."
+            }
+        }
     }
 }
 

@@ -33,6 +33,8 @@ struct AlbumDetailView: View {
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var captionDraft = ""
     @State private var dateTakenDraft = Date()
+    @State private var uploadError: String? = nil
+    @State private var isUploading = false
 
     @Environment(\.dismiss) private var dismiss
 
@@ -60,7 +62,36 @@ struct AlbumDetailView: View {
             .padding(.bottom, 32)
         }
         .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
-        .navigationBarHidden(true)
+        .toolbar(.visible, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(currentAlbum.title)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button {
+                    dismiss()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                        Text("Back")
+                    }
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                HStack(spacing: 10) {
+                    Button { showEditAlbum = true } label: {
+                        Image(systemName: "pencil")
+                    }
+                    if !store.photos.isEmpty {
+                        Button {
+                            slideshowStartIdx = 0
+                            showSlideshow = true
+                        } label: {
+                            Image(systemName: "play.fill")
+                        }
+                    }
+                }
+            }
+        }
         .onAppear { store.startListeningToPhotos(albumId: album.id ?? "") }
         .onDisappear { store.stopListeningToPhotos() }
         // Edit album sheet
@@ -90,60 +121,21 @@ struct AlbumDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .alert("Upload Error", isPresented: Binding(
+            get: { uploadError != nil },
+            set: { if !$0 { uploadError = nil } }
+        )) {
+            Button("OK") { uploadError = nil }
+        } message: {
+            Text(uploadError ?? "")
+        }
     }
 
     // MARK: - Header
 
     private var headerView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Back + action buttons
-            HStack {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(Color(UIColor.label))
-                        .padding(10)
-                        .background(Color(UIColor.secondarySystemGroupedBackground))
-                        .clipShape(Circle())
-                }
-
-                Spacer()
-
-                HStack(spacing: 10) {
-                    // Edit button
-                    Button { showEditAlbum = true } label: {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(Color(UIColor.label))
-                            .padding(10)
-                            .background(Color(UIColor.secondarySystemGroupedBackground))
-                            .clipShape(Circle())
-                    }
-
-                    // Slideshow button — only if photos exist
-                    if !store.photos.isEmpty {
-                        Button {
-                            slideshowStartIdx = 0
-                            showSlideshow = true
-                        } label: {
-                            Label("Slideshow", systemImage: "play.fill")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(Color(UIColor.label))
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 9)
-                                .background(Color(UIColor.secondarySystemGroupedBackground))
-                                .cornerRadius(20)
-                        }
-                    }
-                }
-            }
-            .padding(.top, 4)
-
-            // Title + date
             VStack(alignment: .leading, spacing: 4) {
-                Text(currentAlbum.title)
-                    .font(.system(size: 28, weight: .bold, design: .serif))
-                    .foregroundColor(Color(UIColor.label))
 
                 if let date = currentAlbum.date {
                     HStack(spacing: 5) {
@@ -273,7 +265,7 @@ struct AlbumDetailView: View {
                 }
 
                 // Photo picker
-                let uploading = store.isUploading
+                let uploading = isUploading || store.isUploading
                 PhotosPicker(
                     selection: $pickerItems,
                     maxSelectionCount: 30,
@@ -308,10 +300,18 @@ struct AlbumDetailView: View {
                             )
                     )
                 }
-                .disabled(store.isUploading)
+                .disabled(uploading)
                 .onChange(of: pickerItems) { _, newItems in
                     guard !newItems.isEmpty else { return }
                     uploadPickedPhotos(newItems)
+                }
+
+                if let err = uploadError {
+                    Text(err)
+                        .font(.footnote)
+                        .foregroundColor(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 4)
                 }
 
                 Spacer()
@@ -333,6 +333,10 @@ struct AlbumDetailView: View {
         guard let albumId = album.id else { return }
 
         Task {
+            isUploading = true
+            uploadError = nil
+            var firstError: String?
+
             for item in items {
                 guard let data = try? await item.loadTransferable(type: Data.self),
                       let image = UIImage(data: data) else { continue }
@@ -347,13 +351,22 @@ struct AlbumDetailView: View {
                     )
                     try await store.addPhoto(photo)
                 } catch {
-                    store.errorMessage = error.localizedDescription
+                    if firstError == nil { firstError = error.localizedDescription }
                 }
             }
+
             pickerItems = []
             captionDraft = ""
             dateTakenDraft = Date()
-            showAddPhotos = false
+            isUploading = false
+
+            if let firstError {
+                // Keep sheet open so the error is visible inline; don't trigger
+                // a sheet-dismissal + alert-presentation race.
+                uploadError = firstError
+            } else {
+                showAddPhotos = false
+            }
         }
     }
 }

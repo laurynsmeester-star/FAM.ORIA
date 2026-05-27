@@ -27,26 +27,33 @@ struct AlbumsView: View {
     // MARK: Body
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    headerView
-                    filterTabsView
-                    contentView
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 32)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                headerView
+                filterTabsView
+                contentView
             }
-            .background(Color(UIColor.systemGroupedBackground))
-            .toolbar(.hidden, for: .navigationBar)
-            .onAppear  { store.startListeningToAlbums() }
-            .onDisappear { store.stopListeningToAlbums() }
-            .sheet(isPresented: $showCreateForm) {
-                AlbumFormView(store: store, existingAlbum: nil)
-            }
-            .navigationDestination(item: $selectedAlbum) { album in
+            .padding(.horizontal, 16)
+            .padding(.bottom, 32)
+        }
+        .background(Color(UIColor.systemGroupedBackground))
+        .onAppear  { store.startListeningToAlbums() }
+        .onDisappear { store.stopListeningToAlbums() }
+        .sheet(isPresented: $showCreateForm) {
+            AlbumFormView(store: store, existingAlbum: nil)
+        }
+        .fullScreenCover(item: $selectedAlbum) { album in
+            NavigationStack {
                 AlbumDetailView(album: album, store: store)
             }
+        }
+        .alert("Error", isPresented: Binding(
+            get: { store.errorMessage != nil },
+            set: { if !$0 { store.errorMessage = nil } }
+        )) {
+            Button("OK") { store.errorMessage = nil }
+        } message: {
+            Text(store.errorMessage ?? "")
         }
     }
 
@@ -82,13 +89,12 @@ struct AlbumsView: View {
     private var filterTabsView: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                CategoryChip(title: "All", emoji: "\u{1F5C2}\u{FE0F}", isSelected: selectedFilter == nil) {
+                CategoryChip(title: "All", isSelected: selectedFilter == nil) {
                     withAnimation(.spring(response: 0.3)) { selectedFilter = nil }
                 }
                 ForEach(AlbumCategory.allCases, id: \.self) { cat in
                     CategoryChip(
                         title: cat.displayName,
-                        emoji: cat.emoji,
                         isSelected: selectedFilter == cat
                     ) {
                         withAnimation(.spring(response: 0.3)) {
@@ -271,26 +277,23 @@ struct AlbumCardView: View {
 
 struct CategoryChip: View {
     let title: String
-    let emoji: String
     let isSelected: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                Text(emoji).font(.body)
-                Text(title).font(.subheadline.weight(isSelected ? .semibold : .regular))
-            }
-            .foregroundColor(isSelected ? .white : Color(UIColor.label))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(
-                isSelected
-                    ? AnyView(LinearGradient.famoriaPrimary)
-                    : AnyView(Color(UIColor.secondarySystemGroupedBackground))
-            )
-            .cornerRadius(20)
-            .shadow(color: isSelected ? Color.famoriaRose.opacity(0.3) : .clear, radius: 4, x: 0, y: 2)
+            Text(title)
+                .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                .foregroundColor(isSelected ? .white : Color(UIColor.label))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(
+                    isSelected
+                        ? AnyView(LinearGradient.famoriaPrimary)
+                        : AnyView(Color(UIColor.secondarySystemGroupedBackground))
+                )
+                .cornerRadius(20)
+                .shadow(color: isSelected ? Color.famoriaRose.opacity(0.3) : .clear, radius: 4, x: 0, y: 2)
         }
     }
 }

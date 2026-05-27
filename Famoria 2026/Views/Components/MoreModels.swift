@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import os
 import SwiftUI
 import Combine
 @preconcurrency import FirebaseFirestore
@@ -83,6 +84,20 @@ public enum DocumentFileType: String, Codable, CaseIterable, Identifiable {
         default: return .other
         }
     }
+
+    /// Content-type to attach when uploading to Firebase Storage. Best-effort
+    /// guess — the right value lets QuickLook / browsers open the file
+    /// without an explicit extension hint.
+    public var mimeType: String {
+        switch self {
+        case .pdf:         return "application/pdf"
+        case .doc:         return "application/msword"
+        case .image:       return "image/jpeg"
+        case .spreadsheet: return "text/csv"
+        case .text:        return "text/plain"
+        case .other:       return "application/octet-stream"
+        }
+    }
 }
 
 /// Who can see / open a document.
@@ -118,6 +133,10 @@ public struct FamilyDocument: Identifiable, Codable, Equatable, Hashable {
     public var fileURL: URL?
     /// File copied into app's Documents directory.
     public var localFilename: String?
+    /// Firebase Storage download URL for the file. This is the canonical
+    /// cross-device location — when the file isn't already cached locally,
+    /// readers download from here.
+    public var remoteURL: String?
     public var fileType: DocumentFileType
     public var category: DocumentCategory
     public var tags: [String]
@@ -137,6 +156,7 @@ public struct FamilyDocument: Identifiable, Codable, Equatable, Hashable {
         notes: String = "",
         fileURL: URL? = nil,
         localFilename: String? = nil,
+        remoteURL: String? = nil,
         fileType: DocumentFileType = .other,
         category: DocumentCategory = .other,
         tags: [String] = [],
@@ -151,6 +171,7 @@ public struct FamilyDocument: Identifiable, Codable, Equatable, Hashable {
         self.notes = notes
         self.fileURL = fileURL
         self.localFilename = localFilename
+        self.remoteURL = remoteURL
         self.fileType = fileType
         self.category = category
         self.tags = tags
@@ -327,6 +348,9 @@ public final class DocumentsStore: ObservableObject {
 
     @Published public var documents: [FamilyDocument] = []
     @Published public var comments: [DocumentComment] = []
+    /// Surfaced to the UI when a write fails so the user knows the document
+    /// did not save (previously these errors were swallowed by `try?`).
+    @Published public var errorMessage: String?
 
     private let db = Firestore.firestore()
     private var docsListener: ListenerRegistration?
@@ -341,6 +365,9 @@ public final class DocumentsStore: ObservableObject {
         docsListener = db.collection("famoria_documents")
             .order(by: "createdDate", descending: true)
             .addSnapshotListener { [weak self] snapshot, error in
+                if let error {
+                    Log.app.error("documents listener failed: \(error.localizedDescription, privacy: .public)")
+                }
                 guard let self, let snapshot else { return }
                 self.documents = snapshot.documents.compactMap { doc in
                     var data = doc.data()
@@ -352,6 +379,9 @@ public final class DocumentsStore: ObservableObject {
         commentsListener = db.collection("famoria_doc_comments")
             .order(by: "createdDate", descending: false)
             .addSnapshotListener { [weak self] snapshot, error in
+                if let error {
+                    Log.app.error("doc comments listener failed: \(error.localizedDescription, privacy: .public)")
+                }
                 guard let self, let snapshot else { return }
                 self.comments = snapshot.documents.compactMap { doc in
                     var data = doc.data()
@@ -369,11 +399,22 @@ public final class DocumentsStore: ObservableObject {
     }
 
     public func add(_ doc: FamilyDocument) {
-        try? db.collection("famoria_documents").document(doc.id).setData(from: doc)
+        do {
+            try db.collection("famoria_documents").document(doc.id).setData(from: doc)
+        } catch {
+            Log.app.error("Failed to save document: \(error.localizedDescription, privacy: .public)")
+            self.errorMessage = "Couldn't save document: \(error.localizedDescription)"
+        }
     }
 
     public func remove(_ id: String) {
-        db.collection("famoria_documents").document(id).delete()
+        db.collection("famoria_documents").document(id).delete { [weak self] err in
+            if let err {
+                Log.app.error("Failed to delete document: \(err.localizedDescription, privacy: .public)")
+                let message = "Couldn't delete document: \(err.localizedDescription)"
+                Task { @MainActor [weak self] in self?.errorMessage = message }
+            }
+        }
         db.collection("famoria_doc_comments").whereField("documentId", isEqualTo: id).getDocuments { [db] snapshot, _ in
             let batch = db.batch()
             snapshot?.documents.forEach { batch.deleteDocument($0.reference) }
@@ -382,17 +423,33 @@ public final class DocumentsStore: ObservableObject {
     }
 
     public func update(_ doc: FamilyDocument) {
-        try? db.collection("famoria_documents").document(doc.id).setData(from: doc, merge: true)
+        do {
+            try db.collection("famoria_documents").document(doc.id).setData(from: doc, merge: true)
+        } catch {
+            Log.app.error("Failed to update document: \(error.localizedDescription, privacy: .public)")
+            self.errorMessage = "Couldn't update document: \(error.localizedDescription)"
+        }
     }
 
     public func addComment(_ c: DocumentComment) {
-        try? db.collection("famoria_doc_comments").document(c.id).setData(from: c)
+        do {
+            try db.collection("famoria_doc_comments").document(c.id).setData(from: c)
+        } catch {
+            Log.app.error("Failed to save comment: \(error.localizedDescription, privacy: .public)")
+            self.errorMessage = "Couldn't post comment: \(error.localizedDescription)"
+        }
     }
 
     public func toggleResolve(_ id: String) {
         if let i = comments.firstIndex(where: { $0.id == id }) {
             let newValue = !comments[i].isResolved
-            db.collection("famoria_doc_comments").document(id).updateData(["isResolved": newValue])
+            db.collection("famoria_doc_comments").document(id).updateData(["isResolved": newValue]) { [weak self] err in
+                if let err {
+                    Log.app.error("Failed to toggle comment resolve: \(err.localizedDescription, privacy: .public)")
+                    let message = "Couldn't update comment: \(err.localizedDescription)"
+                    Task { @MainActor [weak self] in self?.errorMessage = message }
+                }
+            }
         }
     }
 
@@ -404,6 +461,9 @@ public final class DocumentsStore: ObservableObject {
 @MainActor
 public final class RecipesStore: ObservableObject {
     @Published public var recipes: [FamilyRecipe] = []
+    /// Surfaced to the UI when a write fails so the user knows the recipe
+    /// did not save (previously these errors were swallowed by `try?`).
+    @Published public var errorMessage: String?
 
     private let db = Firestore.firestore()
     private var listener: ListenerRegistration?
@@ -415,6 +475,9 @@ public final class RecipesStore: ObservableObject {
         listener = db.collection("famoria_recipes")
             .order(by: "createdDate", descending: true)
             .addSnapshotListener { [weak self] snapshot, error in
+                if let error {
+                    Log.app.error("recipes listener failed: \(error.localizedDescription, privacy: .public)")
+                }
                 guard let self, let snapshot else { return }
                 self.recipes = snapshot.documents.compactMap { doc in
                     var data = doc.data()
@@ -430,11 +493,22 @@ public final class RecipesStore: ObservableObject {
     }
 
     public func upsert(_ r: FamilyRecipe) {
-        try? db.collection("famoria_recipes").document(r.id).setData(from: r)
+        do {
+            try db.collection("famoria_recipes").document(r.id).setData(from: r)
+        } catch {
+            Log.app.error("Failed to save recipe: \(error.localizedDescription, privacy: .public)")
+            self.errorMessage = "Couldn't save recipe: \(error.localizedDescription)"
+        }
     }
 
     public func remove(_ id: String) {
-        db.collection("famoria_recipes").document(id).delete()
+        db.collection("famoria_recipes").document(id).delete { [weak self] err in
+            if let err {
+                Log.app.error("Failed to delete recipe: \(err.localizedDescription, privacy: .public)")
+                let message = "Couldn't delete recipe: \(err.localizedDescription)"
+                Task { @MainActor [weak self] in self?.errorMessage = message }
+            }
+        }
     }
 }
 

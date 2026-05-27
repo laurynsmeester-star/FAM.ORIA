@@ -311,12 +311,26 @@ struct LayoutSnapshot: Equatable {
 /// One drawn line in the tree.
 struct ConnectionLine: Equatable, Identifiable {
     enum Kind { case spouse, parentChild }
-    let id = UUID()
+    let id: String
     let kind: Kind
     let from: CGPoint   // absolute canvas coordinates
     let to: CGPoint
     /// Optional intermediate control point (for the orthogonal "drop" of parent→children)
     let drop: CGPoint?
+
+    init(kind: Kind, from: CGPoint, to: CGPoint, drop: CGPoint?) {
+        self.kind = kind
+        self.from = from
+        self.to = to
+        self.drop = drop
+        // Stable identity derived from geometry so SwiftUI ForEach can diff
+        // connection lines correctly across layout recomputations.
+        if let drop {
+            self.id = "\(kind)|\(from.x),\(from.y)->\(to.x),\(to.y)|\(drop.x),\(drop.y)"
+        } else {
+            self.id = "\(kind)|\(from.x),\(from.y)->\(to.x),\(to.y)"
+        }
+    }
 }
 
 // MARK: - Layout Engine (private)

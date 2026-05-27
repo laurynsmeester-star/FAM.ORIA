@@ -31,6 +31,7 @@
 			);
 			isEditable = 1;
 			outputFiles = (
+				"$(SRCROOT)/newOutputFile",
 			);
 			script = "# <com.apple.build-tasks.compile-rk-assets.xcplugin>\n";
 		};
@@ -40,30 +41,14 @@
 		D639E1E72F8DB45500D6F461 /* FIREBASE_SETUP_COMPLETE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = FIREBASE_SETUP_COMPLETE.md; sourceTree = "<group>"; };
 		D639E1EB2F8DBC2100D6F461 /* BUILD_FIXES_APPLIED.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = BUILD_FIXES_APPLIED.md; sourceTree = "<group>"; };
 		D69584452F8DD4DC00ED4565 /* REGISTRATION_ERROR_DEBUG.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = REGISTRATION_ERROR_DEBUG.md; sourceTree = "<group>"; };
-		D6D13D792F6DEA7D00A97689 /* Famoria 2026.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = "Famoria 2026.app"; path = "../../../../../../../../dev/Famoria 2026 with firebase/Famoria 2026/Famoria 2026.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		D6E6C9D82FAAD6510001CB6B /* Famoria 2026.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Famoria 2026.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		D6F9D3E82F860C6C007F5994 /* FirebaseFamilyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseFamilyService.swift; sourceTree = "<group>"; };
 		D6F9D3EA2F860C85007F5994 /* FirebaseContentService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseContentService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		D6E6C9D52FAAB4170001CB6B /* Exceptions for "Famoria 2026" folder in "Famoria 2026" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				"../../../../../../../../dev/Famoria 2026 with firebase/Famoria 2026/Famoria 2026.app",
-			);
-			target = D6D13D782F6DEA7D00A97689 /* Famoria 2026 */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		D6D13DBC2F76323700A97689 /* Famoria 2026 */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				D6E6C9D52FAAB4170001CB6B /* Exceptions for "Famoria 2026" folder in "Famoria 2026" target */,
-			);
-			explicitFileTypes = {
-				"../../../../../../../../dev/Famoria 2026 with firebase/Famoria 2026/Famoria 2026.app" = wrapper.application;
-			};
 			path = "Famoria 2026";
 			sourceTree = "<group>";
 		};
@@ -112,6 +97,7 @@
 		D6D13D7A2F6DEA7D00A97689 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				D6E6C9D82FAAD6510001CB6B /* Famoria 2026.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -147,7 +133,7 @@
 				D6E6C9D62FAACD440001CB6B /* FirebaseAppCheck */,
 			);
 			productName = "Famoria 2026";
-			productReference = D6D13D792F6DEA7D00A97689 /* Famoria 2026.app */;
+			productReference = D6E6C9D82FAAD6510001CB6B /* Famoria 2026.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -169,7 +155,7 @@
 					};
 				};
 			};
-			buildConfigurationList = D6D13D742F6DEA7D00A97689 /* Build configuration list for PBXProject "1.Famoria 2026 with Firebase" */;
+			buildConfigurationList = D6D13D742F6DEA7D00A97689 /* Build configuration list for PBXProject "Famoria with Firebase" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -356,6 +342,9 @@
 				INFOPLIST_FILE = "Famoria-2026-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Famoria;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Famoria needs access to your calendar to display and sync family events.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Famoria needs access to your calendar to display and sync family events.";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Famoria adds family events to your calendar.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Famoria uses your contacts to invite family members";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -398,6 +387,9 @@
 				INFOPLIST_FILE = "Famoria-2026-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Famoria;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Famoria needs access to your calendar to display and sync family events.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Famoria needs access to your calendar to display and sync family events.";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Famoria adds family events to your calendar.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Famoria uses your contacts to invite family members";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -428,7 +420,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		D6D13D742F6DEA7D00A97689 /* Build configuration list for PBXProject "1.Famoria 2026 with Firebase" */ = {
+		D6D13D742F6DEA7D00A97689 /* Build configuration list for PBXProject "Famoria with Firebase" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D6D13D822F6DEA7E00A97689 /* Debug */,

@@ -78,11 +78,9 @@ private struct HomeSectionHeading: View {
                     .foregroundColor(HomeSectionTheme.rose)
                 }
                 .buttonStyle(.plain)
-            } else {
-                Image(systemName: "arrow.right")
-                    .font(.headline)
-                    .foregroundColor(HomeSectionTheme.slateLight)
             }
+            // When there is no onTap action, render no trailing arrow at all
+            // (the previous behavior of a disabled grey arrow was misleading).
         }
         .padding(.bottom, 4)
     }
@@ -100,7 +98,7 @@ struct FamilyMembersSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HomeSectionHeading(title: "Family Members", onTap: onSeeAll)
+            HomeSectionHeading(title: "Family Members")
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 16) {
@@ -148,6 +146,16 @@ struct UpdatesSection: View {
     let latestMessage: FeedMessage?
     let hasUpcomingEvents: Bool
     let hasRecentAlbums: Bool
+    var nextEventTitle: String? = nil
+    var nextEventDate: Date? = nil
+    var recentAlbumTitle: String? = nil
+
+    /// Tapping the "Message from …" row.
+    var onMessageTap: () -> Void = {}
+    /// Tapping the "Upcoming: …" row.
+    var onEventTap: () -> Void = {}
+    /// Tapping the "New album: …" row.
+    var onAlbumTap: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -159,31 +167,49 @@ struct UpdatesSection: View {
                     BulletRow(
                         bulletColor: HomeSectionTheme.rose,
                         title: "Message from \(message.authorName)",
-                        detail: shortened(message.content)
+                        detail: shortened(message.content),
+                        onTap: onMessageTap
                     )
                 } else {
                     BulletRow(
                         bulletColor: HomeSectionTheme.slateLight,
                         title: "No recent messages",
-                        detail: "Start a conversation with your family!"
+                        detail: "Start a conversation with your family!",
+                        onTap: onMessageTap
                     )
                 }
 
-                // Row 2: events (only when there are none, per the original)
-                if !hasUpcomingEvents {
+                // Row 2: events
+                if hasUpcomingEvents, let title = nextEventTitle {
+                    BulletRow(
+                        bulletColor: HomeSectionTheme.violet,
+                        title: "Upcoming: \(title)",
+                        detail: nextEventDate.map { dateRelative($0) } ?? "Coming up soon",
+                        onTap: onEventTap
+                    )
+                } else if !hasUpcomingEvents {
                     BulletRow(
                         bulletColor: HomeSectionTheme.slateLight,
                         title: "No upcoming events",
-                        detail: "Currently, there are no family events scheduled. Plan something fun together soon!"
+                        detail: "Currently, there are no family events scheduled. Plan something fun together soon!",
+                        onTap: onEventTap
                     )
                 }
 
-                // Row 3: photos (only when there are none, per the original)
-                if !hasRecentAlbums {
+                // Row 3: photos
+                if hasRecentAlbums, let title = recentAlbumTitle {
+                    BulletRow(
+                        bulletColor: HomeSectionTheme.rose,
+                        title: "New album: \(title)",
+                        detail: "Check out the latest family photos.",
+                        onTap: onAlbumTap
+                    )
+                } else if !hasRecentAlbums {
                     BulletRow(
                         bulletColor: HomeSectionTheme.slateLight,
                         title: "No recent photos",
-                        detail: "You haven't uploaded any new photos this week. Share a moment with your family!"
+                        detail: "You haven't uploaded any new photos this week. Share a moment with your family!",
+                        onTap: onAlbumTap
                     )
                 }
             }
@@ -199,31 +225,51 @@ struct UpdatesSection: View {
         let trimmed = text.prefix(100)
         return trimmed.count == text.count ? String(trimmed) : "\(trimmed)..."
     }
+
+    private func dateRelative(_ date: Date) -> String {
+        let days = Calendar.current.dateComponents([.day],
+            from: Calendar.current.startOfDay(for: Date()),
+            to: Calendar.current.startOfDay(for: date)).day ?? 0
+        if days == 0 { return "Today" }
+        if days == 1 { return "Tomorrow" }
+        if days == -1 { return "Yesterday" }
+        if days > 0 && days < 7 { return "In \(days) days" }
+        if days < 0 && days > -7 { return "\(-days) days ago" }
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
 }
 
 private struct BulletRow: View {
     let bulletColor: Color
     let title: String
     let detail: String
+    var onTap: (() -> Void)? = nil
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Circle()
-                .fill(bulletColor)
-                .frame(width: 8, height: 8)
-                .padding(.top, 6)
+        Button {
+            onTap?()
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Circle()
+                    .fill(bulletColor)
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 6)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.subheadline).fontWeight(.semibold)
-                    .foregroundColor(HomeSectionTheme.slateText)
-                Text(detail)
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.subheadline).fontWeight(.semibold)
+                        .foregroundColor(HomeSectionTheme.slateText)
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer(minLength: 0)
             }
-
-            Spacer(minLength: 0)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(onTap == nil)
     }
 }
 
@@ -434,19 +480,88 @@ struct CelebrationCountdown: View {
     }
 }
 
+// MARK: - Family Member Profile Sheet
+
+/// Lightweight read-only profile shown when tapping a family member bubble
+/// (or selecting one in the search overlay). Avoids routing to the Family Tree.
+struct FamilyMemberProfileSheet: View {
+    let member: User
+    @Environment(\.dismiss) private var dismiss
+
+    private var initials: String {
+        member.name.split(separator: " ").compactMap { $0.first.map(String.init) }
+            .prefix(2).joined().uppercased()
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.purple.opacity(0.3), Color.pink.opacity(0.3)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 110, height: 110)
+                        Text(initials)
+                            .font(.largeTitle.weight(.bold))
+                            .foregroundColor(.purple)
+                    }
+                    .padding(.top, 16)
+
+                    VStack(spacing: 6) {
+                        Text(member.name)
+                            .font(.title2.weight(.bold))
+                        Text(member.email)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        if let role = member.role {
+                            Text(role.rawValue.capitalized)
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 4)
+                                .background(roleColor(role))
+                                .cornerRadius(12)
+                        }
+                    }
+
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+                .padding()
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func roleColor(_ role: MemberRole) -> Color {
+        switch role {
+        case .owner: return .orange
+        case .admin: return .purple
+        case .member: return .blue
+        }
+    }
+}
+
 // MARK: - User Tasks Card
 
 struct UserTasksCard: View {
-    @AppStorage("famoria.userTasks") private var tasksData: Data = Data()
-    @State private var tasks: [UserTask] = []
+    @EnvironmentObject private var appState: AppState
+    @StateObject private var store = UserTasksStore()
     @State private var newTaskText = ""
     @State private var showAddField = false
-
-    struct UserTask: Identifiable, Codable {
-        let id: String
-        var title: String
-        var isDone: Bool
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -460,19 +575,20 @@ struct UserTasksCard: View {
                         .font(.caption)
                         .foregroundColor(.purple)
                 }
+                .accessibilityLabel("Add task")
             }
 
-            if tasks.isEmpty && !showAddField {
+            if store.tasks.isEmpty && !showAddField {
                 Text("No tasks yet")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .padding(.vertical, 4)
             }
 
-            ForEach(tasks.prefix(4)) { task in
+            ForEach(store.tasks.prefix(4)) { task in
                 HStack(spacing: 8) {
                     Button {
-                        toggleTask(task.id)
+                        store.toggle(task.id)
                     } label: {
                         Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
                             .font(.subheadline)
@@ -507,43 +623,27 @@ struct UserTasksCard: View {
         .background(Color(.systemBackground))
         .cornerRadius(16)
         .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
-        .onAppear { loadTasks() }
-    }
-
-    private func loadTasks() {
-        guard !tasksData.isEmpty else { return }
-        if let decoded = try? JSONDecoder().decode([UserTask].self, from: tasksData) {
-            tasks = decoded
+        .onAppear { startIfPossible() }
+        .onDisappear { store.stop() }
+        .onChange(of: appState.currentUser?.id) { _, _ in
+            startIfPossible()
         }
     }
 
-    private func saveTasks() {
-        if let encoded = try? JSONEncoder().encode(tasks) {
-            tasksData = encoded
+    private func startIfPossible() {
+        guard let uid = appState.currentUser?.id else {
+            store.stop()
+            return
         }
+        store.start(userId: uid)
     }
 
     private func addTask() {
         let trimmed = newTaskText.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
-        tasks.append(UserTask(id: UUID().uuidString, title: trimmed, isDone: false))
+        store.add(title: trimmed)
         newTaskText = ""
         showAddField = false
-        saveTasks()
-    }
-
-    private func toggleTask(_ id: String) {
-        if let idx = tasks.firstIndex(where: { $0.id == id }) {
-            tasks[idx].isDone.toggle()
-            // Move completed tasks to end after a delay
-            if tasks[idx].isDone {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    tasks.removeAll { $0.id == id && $0.isDone }
-                    saveTasks()
-                }
-            }
-            saveTasks()
-        }
     }
 }
 

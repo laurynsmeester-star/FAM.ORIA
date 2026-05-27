@@ -1,7 +1,9 @@
 import SwiftUI
+import Combine
 
 struct DirectMessagesView: View {
     @EnvironmentObject var appState: AppState
+    var onNavigate: (FamoriaPage) -> Void = { _ in }
     @State private var showNewChat = false
     @State private var showNewGroup = false
     @State private var selectedChatId: String?
@@ -63,7 +65,10 @@ struct DirectMessagesView: View {
         )) {
             if let chat = selectedChat {
                 NavigationStack {
-                    ChatDetailView(chat: chat)
+                    ChatDetailView(chat: chat, onNavigate: { page in
+                        selectedChatId = nil
+                        onNavigate(page)
+                    })
                 }
             }
         }
@@ -87,6 +92,9 @@ struct DirectMessagesView: View {
         .onAppear {
             appState.observeChats()
             Task { try? await appState.fetchChats() }
+        }
+        .onDisappear {
+            appState.stopObservingChats()
         }
     }
 

@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import os
 import FirebaseCore
 import FirebaseFirestore
 
@@ -30,7 +31,11 @@ final class FirebaseWishlistService {
     ) -> ListenerRegistration {
         return itemsRef(familyId: familyId)
             .order(by: "createdAt", descending: true)
-            .addSnapshotListener { snap, _ in
+            .addSnapshotListener { snap, error in
+                if let error {
+                    Log.wishlist.error("observeItems failed: \(error.localizedDescription, privacy: .public)")
+                    return
+                }
                 let items = snap?.documents.compactMap { Self.decode($0.data()) } ?? []
                 onChange(items)
             }

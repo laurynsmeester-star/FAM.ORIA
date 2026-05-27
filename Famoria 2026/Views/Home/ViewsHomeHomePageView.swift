@@ -30,7 +30,7 @@ struct HomePageView: View {
             case .profile:
                 ProfileTab()
             case .chat:
-                DirectMessagesView()
+                DirectMessagesView(onNavigate: { page in currentPage = page })
             case .familySettings:
                 FamilyAdminView()
             case .familyUpdates:
@@ -231,7 +231,23 @@ struct CalendarTab: View {
     }
 
     private func v2Event(from legacy: FamilyEvent) -> FamilyEventV2 {
-        FamilyEventV2(id: legacy.id, title: legacy.title, date: legacy.date, endDate: legacy.endDate, createdBy: legacy.createdBy)
+        let resolvedType: EventType = {
+            guard let raw = legacy.eventTypeRaw else { return .other }
+            return EventType(rawValue: raw) ?? .other
+        }()
+        return FamilyEventV2(
+            id: legacy.id,
+            title: legacy.title,
+            date: legacy.date,
+            endDate: legacy.endDate,
+            startTime: legacy.startTime,
+            endTime: legacy.endTime,
+            location: legacy.location,
+            notes: legacy.notes,
+            eventType: resolvedType,
+            isRecurring: legacy.isRecurring ?? false,
+            createdBy: legacy.createdBy
+        )
     }
 
     private func eventDates() -> Set<DateComponents> {
@@ -295,6 +311,20 @@ struct CalendarTab: View {
         .task {
             await requestCalendarAccess()
         }
+        .onAppear { applyPendingEventDate() }
+        .onChange(of: appState.pendingEventDate) { _, _ in
+            applyPendingEventDate()
+        }
+    }
+
+    /// If a deep-link asked us to jump to a specific event's date, do it
+    /// once, then clear the pending date so refreshes don't re-trigger it.
+    private func applyPendingEventDate() {
+        guard let date = appState.pendingEventDate else { return }
+        selectedDate = date
+        displayedMonth = date
+        showListView = false
+        appState.pendingEventDate = nil
     }
 
     // MARK: - Custom Calendar Grid
@@ -920,6 +950,9 @@ struct ProfileTab: View {
     @State private var showEditName = false
     @State private var editedName = ""
     @State private var activeSheet: ProfileSheet?
+    @State private var isSendingTestNotification = false
+    @State private var testNotificationResult: String?
+    @State private var showTestNotificationResult = false
 
     private enum ProfileSheet: String, Identifiable {
         case notifications, security, help, share
@@ -941,6 +974,7 @@ struct ProfileTab: View {
                     settingsSection
                     preferencesSection
                     appearanceSection
+                    debugSection
                     dangerSection
                 }
                 .padding()
@@ -965,6 +999,15 @@ struct ProfileTab: View {
                 }
             } message: {
                 Text("Enter your new display name")
+            }
+            .alert("Test Notification", isPresented: $showTestNotificationResult) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                if let err = testNotificationResult {
+                    Text("Failed: \(err)")
+                } else {
+                    Text("Notification written successfully. Tap the bell to see it.")
+                }
             }
             .sheet(item: $activeSheet) { sheet in
                 switch sheet {
@@ -1134,6 +1177,43 @@ struct ProfileTab: View {
             .cornerRadius(16)
             .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
         }
+    }
+
+    private var debugSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Debug")
+                .font(.footnote.weight(.semibold))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 4).padding(.bottom, 8)
+
+            Button {
+                Task {
+                    isSendingTestNotification = true
+                    testNotificationResult = await appState.sendTestNotificationToSelf()
+                    isSendingTestNotification = false
+                    showTestNotificationResult = true
+                }
+            } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: "bell.badge.fill")
+                        .font(.body).foregroundColor(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.purple).cornerRadius(8)
+                    Text("Send Test Notification").font(.body).foregroundColor(.primary)
+                    Spacer()
+                    if isSendingTestNotification {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "chevron.right").font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                .padding()
+            }
+            .disabled(isSendingTestNotification)
+        }
+        .background(Color(.systemBackground))
+        .cornerRadius(16)
+        .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
     }
 
     private var dangerSection: some View {

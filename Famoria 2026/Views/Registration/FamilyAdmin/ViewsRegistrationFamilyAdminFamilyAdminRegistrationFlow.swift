@@ -22,6 +22,7 @@ struct FamilyAdminRegistrationFlow: View {
     @State private var generatedInviteCode = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var registrationComplete = false
     
     var body: some View {
         NavigationStack {
@@ -31,7 +32,7 @@ struct FamilyAdminRegistrationFlow: View {
                 
                 VStack {
                     // Progress indicator
-                    RegistrationProgressBar(currentStep: currentStep, totalSteps: 3)
+                    RegistrationProgressBar(currentStep: min(currentStep, 2), totalSteps: 3)
                         .padding()
                     
                     // Content based on current step
@@ -45,30 +46,32 @@ struct FamilyAdminRegistrationFlow: View {
                             errorMessage: $errorMessage
                         )
                         .tag(0)
-                        
+
                         // Step 2: Family Information
                         FamilyInfoStepView(
                             familyName: $familyName,
                             errorMessage: $errorMessage
                         )
                         .tag(1)
-                        
-                        // Step 3: Review & Complete
-                        ReviewAndCompleteStepView(
+
+                        // Step 3: Review
+                        ReviewStepView(
                             name: name,
                             email: email,
-                            familyName: familyName,
-                            inviteCode: generatedInviteCode,
-                            isLoading: $isLoading
+                            familyName: familyName
                         )
                         .tag(2)
+
+                        // Step 4: Invite Code
+                        FamilyCreatedStepView(inviteCode: generatedInviteCode)
+                        .tag(3)
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .scrollDisabled(true)
                     
                     // Navigation buttons
                     HStack(spacing: 16) {
-                        if currentStep > 0 {
+                        if currentStep > 0 && !registrationComplete {
                             Button {
                                 withAnimation {
                                     currentStep -= 1
@@ -83,7 +86,7 @@ struct FamilyAdminRegistrationFlow: View {
                                     .cornerRadius(10)
                             }
                         }
-                        
+
                         Button {
                             handleNextOrComplete()
                         } label: {
@@ -94,7 +97,7 @@ struct FamilyAdminRegistrationFlow: View {
                                     .frame(maxWidth: .infinity)
                                     .padding()
                             } else {
-                                Text(currentStep == 2 ? "Complete" : "Next")
+                                Text(registrationComplete ? "Done" : (currentStep == 2 ? "Create Account" : "Next"))
                                     .font(.headline)
                                     .frame(maxWidth: .infinity)
                                     .padding()
@@ -113,11 +116,14 @@ struct FamilyAdminRegistrationFlow: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
-                        dismiss()
+                    if !registrationComplete {
+                        Button("Cancel") {
+                            dismiss()
+                        }
                     }
                 }
             }
+            .interactiveDismissDisabled(registrationComplete)
         }
     }
     
@@ -128,59 +134,56 @@ struct FamilyAdminRegistrationFlow: View {
                    !password.isEmpty && password.count >= 6 && password == confirmPassword
         case 1:
             return !familyName.isEmpty
-        case 2:
+        case 2, 3:
             return true
         default:
             return false
         }
     }
-    
+
     private func handleNextOrComplete() {
         errorMessage = nil
-        
-        if currentStep < 2 {
+
+        if registrationComplete {
+            dismiss()
+        } else if currentStep < 2 {
             withAnimation {
                 currentStep += 1
             }
         } else {
-            // Complete registration
             completeRegistration()
         }
     }
-    
+
     private func completeRegistration() {
         isLoading = true
-        
+
         Task {
             do {
-                // Step 1: Create user account with Firebase Auth
                 try await appState.handleSignUp(name: name, email: email, password: password)
-                
-                // Step 2: Create family in Firebase (automatically sets user as owner)
                 try await appState.createFamily(name: familyName)
-                
-                // Step 3: Generate invite code for sharing
                 let code = try await appState.generateInviteCode()
-                
+
                 await MainActor.run {
                     generatedInviteCode = code
+                    registrationComplete = true
                     isLoading = false
-                    dismiss()
+                    withAnimation {
+                        currentStep = 3
+                    }
                 }
             } catch {
                 await MainActor.run {
-                    // 🐛 ENHANCED ERROR LOGGING
-                    print("❌ Registration error: \(error.localizedDescription)")
-                    print("❌ Full error details: \(error)")
+                    print("Registration error: \(error.localizedDescription)")
+                    print("Full error details: \(error)")
                     if let nsError = error as NSError? {
-                        print("❌ Error domain: \(nsError.domain)")
-                        print("❌ Error code: \(nsError.code)")
-                        print("❌ Error userInfo: \(nsError.userInfo)")
+                        print("Error domain: \(nsError.domain)")
+                        print("Error code: \(nsError.code)")
+                        print("Error userInfo: \(nsError.userInfo)")
                     }
-                    
+
                     self.errorMessage = error.localizedDescription
                     self.isLoading = false
-                    // Stay on review screen instead of going back
                 }
             }
         }
@@ -285,13 +288,11 @@ struct FamilyInfoStepView: View {
     }
 }
 
-struct ReviewAndCompleteStepView: View {
+struct ReviewStepView: View {
     let name: String
     let email: String
     let familyName: String
-    let inviteCode: String
-    @Binding var isLoading: Bool
-    
+
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
@@ -301,52 +302,77 @@ struct ReviewAndCompleteStepView: View {
                         .scaledToFit()
                         .frame(width: 80, height: 80)
                         .foregroundColor(.green)
-                    
+
                     Text("Review & Complete")
                         .font(.title2)
                         .fontWeight(.bold)
-                    
+
                     Text("Verify your information")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
                 .padding(.top, 40)
-                
+
                 VStack(spacing: 16) {
                     RegistrationReviewField(label: "Name", value: name)
                     RegistrationReviewField(label: "Email", value: email)
                     RegistrationReviewField(label: "Family Name", value: familyName)
-                    
-                    Divider()
-                        .padding(.vertical, 8)
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Your Family Invite Code")
-                            .font(.headline)
-                        
-                        HStack {
-                            Text(inviteCode)
-                                .font(.system(.title, design: .monospaced))
-                                .fontWeight(.bold)
+                }
+                .padding(.horizontal, 24)
+            }
+        }
+    }
+}
+
+struct FamilyCreatedStepView: View {
+    let inviteCode: String
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                VStack(spacing: 8) {
+                    Image(systemName: "party.popper.fill")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 80, height: 80)
+                        .foregroundColor(.purple)
+
+                    Text("Welcome to Famoria!")
+                        .font(.title2)
+                        .fontWeight(.bold)
+
+                    Text("Your family has been created")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 40)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Your Family Invite Code")
+                        .font(.headline)
+
+                    HStack {
+                        Text(inviteCode)
+                            .font(.system(.title, design: .monospaced))
+                            .fontWeight(.bold)
+                            .foregroundColor(.blue)
+
+                        Spacer()
+
+                        Button {
+                            UIPasteboard.general.string = inviteCode
+                        } label: {
+                            Image(systemName: "doc.on.doc")
                                 .foregroundColor(.blue)
-                            
-                            Spacer()
-                            
-                            Button {
-                                UIPasteboard.general.string = inviteCode
-                            } label: {
-                                Image(systemName: "doc.on.doc")
-                                    .foregroundColor(.blue)
-                            }
                         }
-                        .padding()
-                        .background(Color.blue.opacity(0.1))
-                        .cornerRadius(10)
-                        
-                        Text("Share this code with family members so they can join your family. You can find it later in your profile settings.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                     }
+                    .padding()
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(10)
+
+                    Text("Share this code with family members so they can join your family. You can find it later in your profile settings.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 .padding(.horizontal, 24)
             }

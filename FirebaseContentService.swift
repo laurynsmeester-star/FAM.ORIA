@@ -1,4 +1,5 @@
 import Foundation
+import os
 import FirebaseCore
 import FirebaseFirestore
 
@@ -88,6 +89,10 @@ final class FirebaseContentService {
             .order(by: "timestamp", descending: true)
             .limit(to: 50)
             .addSnapshotListener { snapshot, error in
+                if let error {
+                    Log.content.error("observePosts failed: \(error.localizedDescription, privacy: .public)")
+                    return
+                }
                 guard let documents = snapshot?.documents else {
                     onChange([])
                     return
@@ -118,57 +123,102 @@ final class FirebaseContentService {
     
     // MARK: - Events Management
     
-    /// Creates a new family event
-    func createEvent(familyId: String, title: String, date: Date, createdBy: String) async throws -> FamilyEvent {
-        let eventId = UUID().uuidString
-        
+    /// Creates a new family event. Pass `id` to use a pre-generated document id
+    /// (allowing the caller to optimistically insert the same event locally first).
+    /// V2 fields (startTime, endTime, location, notes, eventTypeRaw, isRecurring)
+    /// are persisted when provided so other family members see the full event.
+    func createEvent(
+        familyId: String,
+        title: String,
+        date: Date,
+        createdBy: String,
+        id: String? = nil,
+        endDate: Date? = nil,
+        startTime: Date? = nil,
+        endTime: Date? = nil,
+        location: String? = nil,
+        notes: String? = nil,
+        eventTypeRaw: String? = nil,
+        isRecurring: Bool? = nil
+    ) async throws -> FamilyEvent {
+        let eventId = id ?? UUID().uuidString
+
         let event = FamilyEvent(
             id: eventId,
             title: title,
             date: date,
-            createdBy: createdBy
+            endDate: endDate,
+            createdBy: createdBy,
+            startTime: startTime,
+            endTime: endTime,
+            location: location,
+            notes: notes,
+            eventTypeRaw: eventTypeRaw,
+            isRecurring: isRecurring
         )
-        
-        let eventData: [String: Any] = [
+
+        var eventData: [String: Any] = [
             "id": event.id,
             "title": title,
             "date": Timestamp(date: date),
             "createdBy": createdBy,
             "createdAt": FieldValue.serverTimestamp()
         ]
-        
+        if let endDate { eventData["endDate"] = Timestamp(date: endDate) }
+        if let startTime { eventData["startTime"] = Timestamp(date: startTime) }
+        if let endTime { eventData["endTime"] = Timestamp(date: endTime) }
+        if let location, !location.isEmpty { eventData["location"] = location }
+        if let notes, !notes.isEmpty { eventData["notes"] = notes }
+        if let eventTypeRaw { eventData["eventType"] = eventTypeRaw }
+        if let isRecurring { eventData["isRecurring"] = isRecurring }
+
         try await eventsRef(familyId: familyId).document(eventId).setData(eventData)
-        
+
         return event
     }
-    
+
+    /// Decodes a Firestore event document into a `FamilyEvent`, including
+    /// the optional V2 fields. Returns nil if any required field is missing.
+    private static func parseEvent(from data: [String: Any]) -> FamilyEvent? {
+        guard let id = data["id"] as? String,
+              let title = data["title"] as? String,
+              let dateTs = data["date"] as? Timestamp,
+              let createdBy = data["createdBy"] as? String else {
+            return nil
+        }
+        let endDate = (data["endDate"] as? Timestamp)?.dateValue()
+        let startTime = (data["startTime"] as? Timestamp)?.dateValue()
+        let endTime = (data["endTime"] as? Timestamp)?.dateValue()
+        let location = data["location"] as? String
+        let notes = data["notes"] as? String
+        let eventTypeRaw = data["eventType"] as? String
+        let isRecurring = data["isRecurring"] as? Bool
+        return FamilyEvent(
+            id: id,
+            title: title,
+            date: dateTs.dateValue(),
+            endDate: endDate,
+            createdBy: createdBy,
+            startTime: startTime,
+            endTime: endTime,
+            location: location,
+            notes: notes,
+            eventTypeRaw: eventTypeRaw,
+            isRecurring: isRecurring
+        )
+    }
+
     /// Fetches all events for a family, ordered by date
     func fetchEvents(familyId: String, includePast: Bool = false) async throws -> [FamilyEvent] {
         var query = eventsRef(familyId: familyId).order(by: "date", descending: false)
-        
+
         // Optionally filter out past events
         if !includePast {
             query = query.whereField("date", isGreaterThanOrEqualTo: Timestamp(date: Date()))
         }
-        
+
         let snapshot = try await query.getDocuments()
-        
-        return snapshot.documents.compactMap { doc -> FamilyEvent? in
-            let data = doc.data()
-            guard let id = data["id"] as? String,
-                  let title = data["title"] as? String,
-                  let date = data["date"] as? Timestamp,
-                  let createdBy = data["createdBy"] as? String else {
-                return nil
-            }
-            
-            return FamilyEvent(
-                id: id,
-                title: title,
-                date: date.dateValue(),
-                createdBy: createdBy
-            )
-        }
+        return snapshot.documents.compactMap { Self.parseEvent(from: $0.data()) }
     }
     
     /// Deletes an event
@@ -176,58 +226,57 @@ final class FirebaseContentService {
         try await eventsRef(familyId: familyId).document(eventId).delete()
     }
     
-    /// Updates an event
-    func updateEvent(familyId: String, eventId: String, title: String?, date: Date?) async throws {
+    /// Updates an event. Pass nil for any field to leave it unchanged.
+    func updateEvent(
+        familyId: String,
+        eventId: String,
+        title: String? = nil,
+        date: Date? = nil,
+        endDate: Date? = nil,
+        startTime: Date? = nil,
+        endTime: Date? = nil,
+        location: String? = nil,
+        notes: String? = nil,
+        eventTypeRaw: String? = nil,
+        isRecurring: Bool? = nil
+    ) async throws {
         var updates: [String: Any] = [:]
-        
-        if let title = title {
-            updates["title"] = title
-        }
-        
-        if let date = date {
-            updates["date"] = Timestamp(date: date)
-        }
-        
+        if let title { updates["title"] = title }
+        if let date { updates["date"] = Timestamp(date: date) }
+        if let endDate { updates["endDate"] = Timestamp(date: endDate) }
+        if let startTime { updates["startTime"] = Timestamp(date: startTime) }
+        if let endTime { updates["endTime"] = Timestamp(date: endTime) }
+        if let location { updates["location"] = location }
+        if let notes { updates["notes"] = notes }
+        if let eventTypeRaw { updates["eventType"] = eventTypeRaw }
+        if let isRecurring { updates["isRecurring"] = isRecurring }
+
         if !updates.isEmpty {
             updates["editedAt"] = FieldValue.serverTimestamp()
             try await eventsRef(familyId: familyId).document(eventId).updateData(updates)
         }
     }
-    
+
     /// Sets up a real-time listener for events
     func observeEvents(familyId: String, includePast: Bool = false, onChange: @escaping ([FamilyEvent]) -> Void) -> ListenerRegistration {
         var query = eventsRef(familyId: familyId).order(by: "date", descending: false)
-        
+
         if !includePast {
             query = query.whereField("date", isGreaterThanOrEqualTo: Timestamp(date: Date()))
         }
-        
+
         let listener = query.addSnapshotListener { snapshot, error in
+            if let error {
+                Log.content.error("observeEvents failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
             guard let documents = snapshot?.documents else {
                 onChange([])
                 return
             }
-            
-            let events = documents.compactMap { doc -> FamilyEvent? in
-                let data = doc.data()
-                guard let id = data["id"] as? String,
-                      let title = data["title"] as? String,
-                      let date = data["date"] as? Timestamp,
-                      let createdBy = data["createdBy"] as? String else {
-                    return nil
-                }
-                
-                return FamilyEvent(
-                    id: id,
-                    title: title,
-                    date: date.dateValue(),
-                    createdBy: createdBy
-                )
-            }
-            
-            onChange(events)
+            onChange(documents.compactMap { Self.parseEvent(from: $0.data()) })
         }
-        
+
         return listener
     }
     

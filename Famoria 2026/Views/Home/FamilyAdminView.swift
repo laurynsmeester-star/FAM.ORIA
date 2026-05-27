@@ -63,6 +63,15 @@ struct FamilyAdminView: View {
                 .presentationDetents([.height(280)])
             }
         }
+        .task {
+            if inviteCode == nil {
+                do {
+                    inviteCode = try await appState.fetchLatestInviteCode()
+                } catch {
+                    // No existing code — user can generate one
+                }
+            }
+        }
     }
 
     // MARK: - Admin Header

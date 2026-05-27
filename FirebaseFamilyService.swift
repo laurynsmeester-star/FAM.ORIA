@@ -1,4 +1,5 @@
 import Foundation
+import os
 import FirebaseCore
 import FirebaseFirestore
 import FirebaseAuth
@@ -77,58 +78,71 @@ final class FirebaseFamilyService {
     // MARK: - Invite Code Management
     
     /// Generates a unique 6-character invite code for a family
-    func generateInviteCode(familyId: String, createdBy: String, expiresInHours: Int = 168) async throws -> String {
-        // Generate a readable 6-character code
+    func generateInviteCode(familyId: String, familyName: String, createdBy: String, expiresInHours: Int = 168) async throws -> String {
         let code = generateReadableCode()
-        
+
         let expiresAt = Date().addingTimeInterval(TimeInterval(expiresInHours * 3600))
-        
+
         let inviteData: [String: Any] = [
             "code": code,
             "familyId": familyId,
+            "familyName": familyName,
             "createdBy": createdBy,
             "createdAt": FieldValue.serverTimestamp(),
             "expiresAt": Timestamp(date: expiresAt),
             "usedCount": 0,
-            "maxUses": 10 // Optional: limit how many times code can be used
+            "maxUses": 10
         ]
-        
+
         try await invitesRef.document(code).setData(inviteData)
-        
+
         return code
     }
-    
+
+    /// Fetches the latest valid invite code for a family
+    func fetchLatestInviteCode(familyId: String) async throws -> String? {
+        let snapshot = try await invitesRef
+            .whereField("familyId", isEqualTo: familyId)
+            .whereField("expiresAt", isGreaterThan: Timestamp(date: Date()))
+            .order(by: "expiresAt", descending: true)
+            .limit(to: 1)
+            .getDocuments()
+
+        guard let doc = snapshot.documents.first,
+              let code = doc.data()["code"] as? String,
+              let usedCount = doc.data()["usedCount"] as? Int,
+              let maxUses = doc.data()["maxUses"] as? Int,
+              usedCount < maxUses else {
+            return nil
+        }
+
+        return code
+    }
+
     /// Validates an invite code and returns the family information
     func validateInviteCode(_ code: String) async throws -> (familyId: String, familyName: String) {
         let inviteDoc = try await invitesRef.document(code.uppercased()).getDocument()
-        
+
         guard inviteDoc.exists,
               let data = inviteDoc.data(),
               let familyId = data["familyId"] as? String,
               let expiresAt = data["expiresAt"] as? Timestamp else {
             throw FamilyServiceError.invalidInviteCode
         }
-        
-        // Check if expired
+
         if expiresAt.dateValue() < Date() {
             throw FamilyServiceError.inviteCodeExpired
         }
-        
-        // Check usage limit
+
         let usedCount = data["usedCount"] as? Int ?? 0
         let maxUses = data["maxUses"] as? Int ?? Int.max
-        
+
         if usedCount >= maxUses {
             throw FamilyServiceError.inviteCodeExhausted
         }
-        
-        // Fetch family name
-        let familyDoc = try await familiesRef.document(familyId).getDocument()
-        guard let familyData = familyDoc.data(),
-              let familyName = familyData["name"] as? String else {
-            throw FamilyServiceError.familyNotFound
-        }
-        
+
+        let familyName = data["familyName"] as? String ?? "Family"
+
         return (familyId, familyName)
     }
     
@@ -281,23 +295,27 @@ final class FirebaseFamilyService {
     func observeFamily(familyId: String, onChange: @escaping (Family?) -> Void) -> ListenerRegistration {
         let listener = familiesRef.document(familyId)
             .collection("members")
-            .addSnapshotListener { snapshot, error in
-                guard (snapshot?.documents) != nil else {
+            .addSnapshotListener { [weak self] snapshot, error in
+                if let error {
+                    Log.family.error("observeFamily failed: \(error.localizedDescription, privacy: .public)")
+                }
+                guard let self, (snapshot?.documents) != nil else {
                     onChange(nil)
                     return
                 }
-                
-                Task {
+
+                Task { [weak self] in
+                    guard let self else { return }
                     do {
                         let family = try await self.fetchFamily(familyId: familyId)
                         onChange(family)
                     } catch {
-                        print("Error fetching family: \(error)")
+                        Log.family.error("Error fetching family: \(error.localizedDescription, privacy: .public)")
                         onChange(nil)
                     }
                 }
             }
-        
+
         return listener
     }
     

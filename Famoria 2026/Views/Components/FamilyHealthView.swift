@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 import FirebaseFirestore
 
 struct FamilyHealthView: View {
@@ -18,6 +19,10 @@ struct FamilyHealthView: View {
         listener = db.collection("famoria_health_records")
             .order(by: "date", descending: true)
             .addSnapshotListener { snapshot, error in
+                if let error {
+                    Log.health.error("FamilyHealthView listener failed: \(error.localizedDescription, privacy: .public)")
+                    return
+                }
                 guard let snapshot else { return }
                 records = snapshot.documents.compactMap { doc in
                     var data = doc.data()
@@ -28,7 +33,11 @@ struct FamilyHealthView: View {
     }
 
     private func saveRecord(_ record: HealthRecord) {
-        try? db.collection("famoria_health_records").document(record.id).setData(from: record)
+        do {
+            try db.collection("famoria_health_records").document(record.id).setData(from: record)
+        } catch {
+            Log.health.error("Failed to save health record: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     var body: some View {

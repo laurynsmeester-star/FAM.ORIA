@@ -91,20 +91,17 @@ struct AlbumFormView: View {
                         Button {
                             withAnimation(.spring(response: 0.25)) { category = cat }
                         } label: {
-                            HStack(spacing: 5) {
-                                Text(cat.emoji).font(.title3)
-                                Text(cat.displayName)
-                                    .font(.subheadline.weight(category == cat ? .semibold : .regular))
-                            }
-                            .foregroundColor(category == cat ? .white : Color(UIColor.label))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 9)
-                            .background(
-                                category == cat
-                                    ? AnyView(LinearGradient.famoriaPrimary)
-                                    : AnyView(Color(UIColor.tertiarySystemGroupedBackground))
-                            )
-                            .cornerRadius(20)
+                            Text(cat.displayName)
+                                .font(.subheadline.weight(category == cat ? .semibold : .regular))
+                                .foregroundColor(category == cat ? .white : Color(UIColor.label))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 9)
+                                .background(
+                                    category == cat
+                                        ? AnyView(LinearGradient.famoriaPrimary)
+                                        : AnyView(Color(UIColor.tertiarySystemGroupedBackground))
+                                )
+                                .cornerRadius(20)
                         }
                     }
                 }

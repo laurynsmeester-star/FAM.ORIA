@@ -14,6 +14,7 @@
 
 import Foundation
 import os
+import Combine
 @preconcurrency import FirebaseFirestore
 
 /// One personal to-do for a user. Mirrors `UserTasksCard.UserTask`.
@@ -99,7 +100,8 @@ public final class UserTasksStore: ObservableObject {
         collection(for: uid).document(id).updateData(["isDone": newValue]) { [weak self] err in
             if let err {
                 Log.tasks.error("Failed to toggle task: \(err.localizedDescription, privacy: .public)")
-                Task { @MainActor in self?.errorMessage = err.localizedDescription }
+                let message = err.localizedDescription
+                Task { @MainActor [weak self] in self?.errorMessage = message }
             }
         }
     }
@@ -109,7 +111,8 @@ public final class UserTasksStore: ObservableObject {
         collection(for: uid).document(id).delete { [weak self] err in
             if let err {
                 Log.tasks.error("Failed to delete task: \(err.localizedDescription, privacy: .public)")
-                Task { @MainActor in self?.errorMessage = err.localizedDescription }
+                let message = err.localizedDescription
+                Task { @MainActor [weak self] in self?.errorMessage = message }
             }
         }
     }

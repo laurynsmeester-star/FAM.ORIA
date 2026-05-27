@@ -2,25 +2,21 @@
 //  AddEventView.swift
 //  Famoria 2026
 //
-//  Optimized add/edit event sheet — replaces the bare title+date version.
-//  Translated from web reference (event_type, location, recurring, time range,
-//  end date for multi-day events, optional notes).
-//
-//  Pass `editing:` to edit an existing event; otherwise creates a new one.
+//  Add/edit event sheet. Pass `editing:` to edit an existing event;
+//  otherwise creates a new one at `initialDate`.
 //
 
 import SwiftUI
+import os
 
 struct AddEventView: View {
 
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
 
-    // Optional inputs
     var initialDate: Date = Date()
     var editing: FamilyEventV2? = nil
 
-    // Form state
     @State private var title: String = ""
     @State private var eventType: EventType = .other
     @State private var date: Date = Date()
@@ -153,9 +149,55 @@ struct AddEventView: View {
             createdBy: creator
         )
 
-        // Persist back through your AppState. Adjust to match whatever
-        // mutation API you expose (Firebase, async store, etc.).
+        let isNew = (editing == nil)
         appState.upsertEvent(new)
+
+        // For a newly created event, persist to Firestore so other family members
+        // see it on their devices, and write a notification so they're alerted.
+        // V2 fields are now part of the Firestore document so the full event
+        // syncs cross-device (location, time range, type, notes, recurring).
+        if isNew {
+            Task {
+                do {
+                    try await appState.createEvent(
+                        title: trimmed,
+                        date: date,
+                        id: new.id,
+                        endDate: hasEndDate ? endDate : nil,
+                        startTime: hasTimeRange ? startTime : nil,
+                        endTime: hasTimeRange ? endTime : nil,
+                        location: location.isEmpty ? nil : location,
+                        notes: notes.isEmpty ? nil : notes,
+                        eventTypeRaw: eventType.rawValue,
+                        isRecurring: isRecurring
+                    )
+                } catch {
+                    Log.appState.error("Failed to persist event: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        } else if let editingId = editing?.id, let family = appState.currentFamily {
+            // Edit path — push the updated V2 fields to Firestore.
+            Task {
+                do {
+                    try await appState.updateEvent(
+                        familyId: family.id,
+                        eventId: editingId,
+                        title: trimmed,
+                        date: date,
+                        endDate: hasEndDate ? endDate : nil,
+                        startTime: hasTimeRange ? startTime : nil,
+                        endTime: hasTimeRange ? endTime : nil,
+                        location: location.isEmpty ? nil : location,
+                        notes: notes.isEmpty ? nil : notes,
+                        eventTypeRaw: eventType.rawValue,
+                        isRecurring: isRecurring
+                    )
+                } catch {
+                    Log.appState.error("Failed to update event: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+
         dismiss()
     }
 }
@@ -163,14 +205,22 @@ struct AddEventView: View {
 // MARK: - AppState bridge
 
 extension AppState {
-    /// Inserts or updates a V2 event. Adapt to your Firebase service as needed.
+    /// Inserts or updates a V2 event in the legacy `events` array. The
+    /// `FamilyEvent` model now carries the V2 fields natively, so the full
+    /// payload is preserved (not just title + date).
     func upsertEvent(_ event: FamilyEventV2) {
         let legacy = FamilyEvent(
             id: event.id,
             title: event.title,
             date: event.date,
             endDate: event.endDate,
-            createdBy: event.createdBy
+            createdBy: event.createdBy,
+            startTime: event.startTime,
+            endTime: event.endTime,
+            location: event.location,
+            notes: event.notes,
+            eventTypeRaw: event.eventType.rawValue,
+            isRecurring: event.isRecurring
         )
         if let idx = events.firstIndex(where: { $0.id == event.id }) {
             events[idx] = legacy
@@ -178,6 +228,7 @@ extension AppState {
             events.append(legacy)
         }
     }
+
 }
 
 #Preview {

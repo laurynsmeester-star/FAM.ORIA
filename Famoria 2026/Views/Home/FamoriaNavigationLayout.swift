@@ -199,6 +199,8 @@ struct FamoriaMobileHeader: View {
                 Button(action: onSearch) {
                     Image(systemName: "magnifyingglass").font(.headline).foregroundColor(.primary).padding(8)
                 }
+                .accessibilityLabel("Search")
+
                 Button(action: onBellTapped) {
                     ZStack(alignment: .topTrailing) {
                         Image(systemName: "bell").font(.headline).foregroundColor(.primary).padding(8)
@@ -210,6 +212,8 @@ struct FamoriaMobileHeader: View {
                         }
                     }
                 }
+                .accessibilityLabel(unreadCount > 0 ? "Notifications, \(unreadCount) unread" : "Notifications")
+                .accessibilityHint("Open notifications")
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -353,6 +357,7 @@ struct FamoriaSearchOverlay: View {
     @EnvironmentObject var appState: AppState
     @Binding var isPresented: Bool
     @Binding var currentPage: FamoriaPage
+    var onSelectMember: (User) -> Void = { _ in }
     @State private var searchText = ""
     @FocusState private var isFocused: Bool
 
@@ -373,15 +378,23 @@ struct FamoriaSearchOverlay: View {
         for member in appState.currentFamily?.members ?? [] {
             if member.name.lowercased().contains(query) || member.email.lowercased().contains(query) {
                 results.append(SearchResult(id: "member-\(member.id)", title: member.name,
-                    subtitle: member.email, icon: "person.fill", color: .blue, action: { currentPage = .familyTree; isPresented = false }))
+                    subtitle: member.email, icon: "person.fill", color: .blue, action: {
+                        isPresented = false
+                        onSelectMember(member)
+                    }))
             }
         }
 
         // Search events
         for event in appState.events {
             if event.title.lowercased().contains(query) || event.createdBy.lowercased().contains(query) {
+                let eventDate = event.date
                 results.append(SearchResult(id: "event-\(event.id)", title: event.title,
-                    subtitle: "Event by \(event.createdBy)", icon: "calendar", color: .orange, action: { currentPage = .events; isPresented = false }))
+                    subtitle: "Event by \(event.createdBy)", icon: "calendar", color: .orange, action: {
+                        appState.pendingEventDate = eventDate
+                        currentPage = .events
+                        isPresented = false
+                    }))
             }
         }
 
@@ -506,6 +519,7 @@ struct FamoriaLayoutView<Content: View>: View {
     @State private var menuOpen = false
     @State private var searchOpen = false
     @State private var showNotifications = false
+    @State private var memberProfile: User?
     @AppStorage("famoria.darkMode") private var darkMode = false
 
     let content: () -> Content
@@ -562,7 +576,7 @@ struct FamoriaLayoutView<Content: View>: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 FamoriaMobileFooterNav(
                     currentPage: $currentPage,
-                    unreadMessagesCount: 0
+                    unreadMessagesCount: appState.unreadMessagesCount
                 )
             }
             .background(FamoriaTheme.backgroundGradient.ignoresSafeArea())
@@ -583,13 +597,17 @@ struct FamoriaLayoutView<Content: View>: View {
             if searchOpen {
                 FamoriaSearchOverlay(
                     isPresented: $searchOpen,
-                    currentPage: $currentPage
+                    currentPage: $currentPage,
+                    onSelectMember: { memberProfile = $0 }
                 )
                 .transition(.opacity)
             }
         }
         .sheet(isPresented: $showNotifications) {
             NotificationsView()
+        }
+        .sheet(item: $memberProfile) { member in
+            FamilyMemberProfileSheet(member: member)
         }
     }
 

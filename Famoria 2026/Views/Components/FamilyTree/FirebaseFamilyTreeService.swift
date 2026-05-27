@@ -13,6 +13,7 @@
 //
 
 import Foundation
+import os
 import FirebaseCore
 import FirebaseFirestore
 
@@ -57,12 +58,20 @@ final class FirebaseFamilyTreeService {
         var snapshotMembers: [FamilyTreeMember] = []
         var snapshotRels: [Relationship] = []
 
-        let mListener = membersRef(familyId: familyId).addSnapshotListener { snap, _ in
+        let mListener = membersRef(familyId: familyId).addSnapshotListener { snap, error in
+            if let error {
+                Log.familyTree.error("members listener failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
             snapshotMembers = snap?.documents.compactMap { Self.decodeMember($0.data()) } ?? []
             onChange(FamilyTree(familyId: familyId, members: snapshotMembers, relationships: snapshotRels))
         }
 
-        let rListener = relationshipsRef(familyId: familyId).addSnapshotListener { snap, _ in
+        let rListener = relationshipsRef(familyId: familyId).addSnapshotListener { snap, error in
+            if let error {
+                Log.familyTree.error("relationships listener failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
             snapshotRels = snap?.documents.compactMap { Self.decodeRelationship($0.data()) } ?? []
             onChange(FamilyTree(familyId: familyId, members: snapshotMembers, relationships: snapshotRels))
         }

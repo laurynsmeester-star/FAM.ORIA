@@ -71,12 +71,51 @@ public struct FamilyEvent: Identifiable, Codable, Equatable {
 
     public var createdBy: String
 
-    public init(id: String, title: String, date: Date, endDate: Date? = nil, createdBy: String) {
+    // MARK: - V2 fields
+    //
+    // These were previously stored only in a local `FamilyEventV2` value
+    // that never made it to Firestore. They're persisted now so an event
+    // created on one family member's device shows up complete on every
+    // other member's device.
+
+    /// Optional explicit start time (separate from `date`'s day component).
+    public var startTime: Date?
+    /// Optional explicit end time on the same day.
+    public var endTime: Date?
+    /// Free-form location string (a venue, address, "Mom's house", etc.).
+    public var location: String?
+    /// Free-form notes.
+    public var notes: String?
+    /// One of `EventType.rawValue` (birthday/anniversary/etc.). Optional
+    /// because legacy events created before this field existed will be nil.
+    public var eventTypeRaw: String?
+    /// Whether the event repeats yearly.
+    public var isRecurring: Bool?
+
+    public init(
+        id: String,
+        title: String,
+        date: Date,
+        endDate: Date? = nil,
+        createdBy: String,
+        startTime: Date? = nil,
+        endTime: Date? = nil,
+        location: String? = nil,
+        notes: String? = nil,
+        eventTypeRaw: String? = nil,
+        isRecurring: Bool? = nil
+    ) {
         self.id = id
         self.title = title
         self.date = date
         self.endDate = endDate
         self.createdBy = createdBy
+        self.startTime = startTime
+        self.endTime = endTime
+        self.location = location
+        self.notes = notes
+        self.eventTypeRaw = eventTypeRaw
+        self.isRecurring = isRecurring
     }
 }
 
@@ -155,6 +194,7 @@ public enum FamoriaNotificationType: String, Codable {
 
 public struct FamoriaNotification: Identifiable, Codable {
     public let id: String
+    public var userId: String
     public var title: String
     public var body: String
     public var type: FamoriaNotificationType

@@ -1,10 +1,13 @@
 import SwiftUI
+import os
 import PhotosUI
+import FirebaseStorage
 
 struct ChatDetailView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
     let chat: Chat
+    var onNavigate: (FamoriaPage) -> Void = { _ in }
     @State private var messageText = ""
     @State private var replyingTo: ChatMessage? = nil
     @State private var selectedPhotos: [PhotosPickerItem] = []
@@ -15,6 +18,10 @@ struct ChatDetailView: View {
     @State private var showAttachMenu = false
     @State private var showPhotoPicker = false
     @State private var showCameraPicker = false
+    @State private var profileMember: User? = nil
+    @State private var typingDebounceTask: Task<Void, Never>? = nil
+    @State private var isSending = false
+    @State private var sendError: String? = nil
     @FocusState private var isInputActive: Bool
 
     private var messages: [ChatMessage] {
@@ -47,7 +54,7 @@ struct ChatDetailView: View {
         let name: String
         let icon: String
         let color: Color
-        enum Kind { case person, event, album }
+        enum Kind: String { case person, event, album, document }
         let kind: Kind
     }
 
@@ -57,9 +64,20 @@ struct ChatDetailView: View {
             items.append(MentionItem(id: p.id, name: p.name, icon: "person.fill", color: .blue, kind: .person))
         }
         for event in appState.events {
-            items.append(MentionItem(id: "event-\(event.id)", name: event.title, icon: "calendar", color: .orange, kind: .event))
+            items.append(MentionItem(id: event.id, name: event.title, icon: "calendar", color: .orange, kind: .event))
         }
         return items
+    }
+
+    /// Returns a mapping of mention text (e.g. "@John") → MentionItem for the
+    /// items currently mentionable in this chat. Used by `styledMessageContent`
+    /// to render mentions as tappable links.
+    private var mentionLookup: [String: MentionItem] {
+        var map: [String: MentionItem] = [:]
+        for item in mentionItems {
+            map["@\(item.name)"] = item
+        }
+        return map
     }
 
     private var filteredMentionItems: [MentionItem] {
@@ -110,6 +128,7 @@ struct ChatDetailView: View {
         }
         .onDisappear {
             Task { try? await appState.setTyping(false, in: chat.id) }
+            appState.stopObservingMessages(for: chat.id)
         }
         .overlay {
             if let msg = showReactionPicker {
@@ -127,11 +146,26 @@ struct ChatDetailView: View {
         } message: {
             Text("Are you sure you want to delete this message?")
         }
+        .alert(
+            "Message failed to send",
+            isPresented: Binding(
+                get: { sendError != nil },
+                set: { if !$0 { sendError = nil } }
+            ),
+            presenting: sendError
+        ) { _ in
+            Button("OK", role: .cancel) {}
+        } message: { message in
+            Text(message)
+        }
         .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotos, maxSelectionCount: 5, matching: .images)
         .onChange(of: selectedPhotos) { _, newItems in
             guard !newItems.isEmpty else { return }
             sendPhotos(newItems)
             selectedPhotos = []
+        }
+        .sheet(item: $profileMember) { member in
+            FamilyMemberProfileSheet(member: member)
         }
     }
 
@@ -303,11 +337,6 @@ struct ChatDetailView: View {
                 if !msg.reactions.isEmpty {
                     reactionsView(for: msg)
                 }
-
-                Text(msg.timestamp, style: .time)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .padding(isSelf ? .trailing : .leading, 4)
             }
 
             if !isSelf { Spacer(minLength: 50) }
@@ -317,17 +346,8 @@ struct ChatDetailView: View {
     }
 
     private func styledMessageContent(_ content: String, isSelf: Bool) -> some View {
-        let parts = parseMentions(content)
-        var text = Text("")
-        for part in parts {
-            if part.isMention {
-                text = text + Text(part.text).bold().foregroundColor(isSelf ? .white.opacity(0.9) : .blue)
-            } else {
-                text = text + Text(part.text)
-            }
-        }
-
-        return text
+        let attributed = buildAttributedMessage(content: content, isSelf: isSelf)
+        return Text(attributed)
             .padding(.vertical, 8)
             .padding(.horizontal, 14)
             .background(isSelf ? Color.blue : Color(.secondarySystemBackground))
@@ -335,6 +355,59 @@ struct ChatDetailView: View {
             .cornerRadius(20, corners: isSelf
                            ? [.topLeft, .topRight, .bottomLeft]
                            : [.topLeft, .topRight, .bottomRight])
+            .environment(\.openURL, OpenURLAction { url in
+                handleMentionURL(url)
+                return .handled
+            })
+    }
+
+    private func buildAttributedMessage(content: String, isSelf: Bool) -> AttributedString {
+        let parts = parseMentions(content)
+        let lookup = mentionLookup
+        var result = AttributedString()
+
+        for part in parts {
+            var segment = AttributedString(part.text)
+            if part.isMention, let item = lookup[part.text] {
+                if let url = URL(string: "famoria-mention://\(item.kind.rawValue)/\(item.id)") {
+                    segment.link = url
+                }
+                segment.font = .body.bold()
+                segment.foregroundColor = isSelf ? .white : .blue
+                segment.underlineStyle = nil
+            } else {
+                segment.foregroundColor = isSelf ? .white : .primary
+            }
+            result.append(segment)
+        }
+        return result
+    }
+
+    /// Routes a tapped mention link to the right destination.
+    /// Person → in-place profile sheet. Event/Document/Album → dismiss chat
+    /// and switch the main page via `onNavigate`.
+    private func handleMentionURL(_ url: URL) {
+        guard url.scheme == "famoria-mention" else { return }
+        guard let kind = url.host else { return }
+        let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        switch kind {
+        case MentionItem.Kind.person.rawValue:
+            if let member = appState.currentFamily?.members.first(where: { $0.id == id }) {
+                profileMember = member
+            }
+        case MentionItem.Kind.event.rawValue:
+            dismiss()
+            onNavigate(.events)
+        case MentionItem.Kind.document.rawValue:
+            dismiss()
+            onNavigate(.documents)
+        case MentionItem.Kind.album.rawValue:
+            dismiss()
+            onNavigate(.albums)
+        default:
+            break
+        }
     }
 
     private func avatarCircle(for msg: ChatMessage) -> some View {
@@ -385,26 +458,28 @@ struct ChatDetailView: View {
                 .ignoresSafeArea()
                 .onTapGesture { showReactionPicker = nil }
 
-            VStack(spacing: 16) {
-                HStack(spacing: 12) {
-                    ForEach(["❤️", "👍", "😂", "😮", "😢", "🔥"], id: \.self) { emoji in
-                        Button {
-                            Task {
-                                try? await appState.addReaction(emoji, to: msg.id, in: chat.id)
-                            }
-                            showReactionPicker = nil
-                        } label: {
-                            Text(emoji)
-                                .font(.largeTitle)
+            HStack(spacing: 14) {
+                ForEach(["❤️", "👍", "😂", "😮", "😢", "🔥"], id: \.self) { emoji in
+                    Button {
+                        Task {
+                            try? await appState.addReaction(emoji, to: msg.id, in: chat.id)
                         }
+                        showReactionPicker = nil
+                    } label: {
+                        Text(emoji)
+                            .font(.system(size: 32))
+                            .frame(width: 44, height: 44)
                     }
+                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-                .background(.ultraThickMaterial)
-                .clipShape(Capsule())
-                .shadow(radius: 10)
             }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 28)
+                    .fill(Color(.systemBackground))
+            )
+            .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
         }
     }
 
@@ -514,6 +589,7 @@ struct ChatDetailView: View {
         case .person: return "Person"
         case .event: return "Event"
         case .album: return "Album"
+        case .document: return "Document"
         }
     }
 
@@ -548,6 +624,8 @@ struct ChatDetailView: View {
                     .font(.title3)
                     .foregroundColor(.blue)
             }
+            .accessibilityLabel("Attach")
+            .accessibilityHint("Photo library or mention someone")
 
             TextField("Message...", text: $messageText, axis: .vertical)
                 .focused($isInputActive)
@@ -557,7 +635,16 @@ struct ChatDetailView: View {
                 .background(Color(.systemGray6))
                 .cornerRadius(20)
                 .onChange(of: messageText) {
-                    Task { try? await appState.setTyping(!messageText.isEmpty, in: chat.id) }
+                    // Debounce typing writes so we send at most ~one per 500ms
+                    // rather than one Firestore write per keystroke.
+                    typingDebounceTask?.cancel()
+                    let isTyping = !messageText.isEmpty
+                    typingDebounceTask = Task {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        if !Task.isCancelled {
+                            try? await appState.setTyping(isTyping, in: chat.id)
+                        }
+                    }
                     if messageText.hasSuffix("@") {
                         showMentionPicker = true
                     } else if !messageText.contains("@") {
@@ -567,12 +654,14 @@ struct ChatDetailView: View {
 
             Button {
                 send()
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 32))
                     .foregroundColor(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .gray : .blue)
             }
-            .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+            .accessibilityLabel("Send message")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -583,19 +672,32 @@ struct ChatDetailView: View {
 
     private func send() {
         let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, !isSending else { return }
         let reply = replyingTo
-        Task {
-            try? await appState.sendMessage(
-                to: chat.id,
-                content: trimmed,
-                replyTo: reply
-            )
-            try? await appState.setTyping(false, in: chat.id)
-        }
+        // Capture text and clear input optimistically; we'll restore on failure.
+        let pendingText = messageText
         messageText = ""
         replyingTo = nil
         showMentionPicker = false
+        isSending = true
+        Task {
+            do {
+                try await appState.sendMessage(
+                    to: chat.id,
+                    content: trimmed,
+                    replyTo: reply
+                )
+                try? await appState.setTyping(false, in: chat.id)
+            } catch {
+                Log.chat.error("sendMessage failed: \(error.localizedDescription, privacy: .public)")
+                await MainActor.run {
+                    sendError = error.localizedDescription
+                    messageText = pendingText
+                    replyingTo = reply
+                }
+            }
+            await MainActor.run { isSending = false }
+        }
     }
 
     private func sendPhotos(_ items: [PhotosPickerItem]) {
@@ -604,13 +706,13 @@ struct ChatDetailView: View {
                 guard let data = try? await item.loadTransferable(type: Data.self),
                       let image = UIImage(data: data) else { continue }
 
-                let storage = FirebaseStorage.Storage.storage()
+                let storageRef = Storage.storage().reference()
                 let filename = "\(UUID().uuidString).jpg"
-                let ref = storage.reference().child("chat_images/\(chat.id)/\(filename)")
+                let ref = storageRef.child("chat_images/\(chat.id)/\(filename)")
 
                 guard let jpegData = image.jpegData(compressionQuality: 0.75) else { continue }
 
-                let metadata = FirebaseStorage.StorageMetadata()
+                let metadata = StorageMetadata()
                 metadata.contentType = "image/jpeg"
 
                 do {

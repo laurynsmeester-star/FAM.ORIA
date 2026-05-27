@@ -19,10 +19,12 @@
 //
 
 import SwiftUI
+import os
 import UIKit
 import UniformTypeIdentifiers
 import PhotosUI
 import QuickLook
+import FirebaseStorage
 
 // MARK: - DocumentsView
 
@@ -52,6 +54,24 @@ struct DocumentsView: View {
     private var isAdmin: Bool {
         guard let role = appState.currentUser?.role else { return false }
         return role == .admin || role == .owner
+    }
+
+    private var eventsV2: [FamilyEventV2] {
+        appState.events.map {
+            FamilyEventV2(
+                id: $0.id,
+                title: $0.title,
+                date: $0.date,
+                endDate: $0.endDate,
+                startTime: $0.startTime,
+                endTime: $0.endTime,
+                location: $0.location,
+                notes: $0.notes,
+                eventType: $0.eventTypeRaw.flatMap(EventType.init(rawValue:)) ?? .other,
+                isRecurring: $0.isRecurring ?? false,
+                createdBy: $0.createdBy
+            )
+        }
     }
 
     // MARK: View
@@ -92,11 +112,23 @@ struct DocumentsView: View {
                         store: store, document: doc,
                         currentUser: currentUserName, isAdmin: isAdmin,
                         family: nil,
-                        events: appState.eventsV2
+                        events: eventsV2
                     )
                 }
                 .onAppear { store.startListening() }
                 .onDisappear { store.stopListening() }
+                .alert(
+                    "Couldn't save",
+                    isPresented: Binding(
+                        get: { store.errorMessage != nil },
+                        set: { if !$0 { store.errorMessage = nil } }
+                    ),
+                    presenting: store.errorMessage
+                ) { _ in
+                    Button("OK", role: .cancel) {}
+                } message: { message in
+                    Text(message)
+                }
         }
     }
 
@@ -241,7 +273,7 @@ struct DocumentsView: View {
 
     private func linkedEventTitle(for doc: FamilyDocument) -> String? {
         guard let id = doc.linkedEventId else { return nil }
-        return appState.eventsV2.first(where: { $0.id == id })?.title
+        return eventsV2.first(where: { $0.id == id })?.title
     }
 }
 
@@ -361,6 +393,8 @@ private struct AddDocumentSheet: View {
     @State private var showFileImporter = false
     @State private var aiSuggestion: DocumentSuggestion? = nil
     @State private var isOrganizing = false
+    @State private var isUploading = false
+    @State private var uploadError: String? = nil
 
     private var familyMembers: [String] {
         family?.members.map(\.name) ?? []
@@ -449,12 +483,36 @@ private struct AddDocumentSheet: View {
             }
             .navigationTitle("Upload Document")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: save)
-                        .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty || (pickedURL == nil && photoData == nil))
+            .overlay {
+                if isUploading {
+                    Color.black.opacity(0.25).ignoresSafeArea()
+                    ProgressView("Uploading…")
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(isUploading)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        Task { await save() }
+                    }
+                    .disabled(isUploading || title.trimmingCharacters(in: .whitespaces).isEmpty || (pickedURL == nil && photoData == nil))
+                }
+            }
+            .alert(
+                "Upload failed",
+                isPresented: Binding(
+                    get: { uploadError != nil },
+                    set: { if !$0 { uploadError = nil } }
+                ),
+                presenting: uploadError
+            ) { _ in
+                Button("OK", role: .cancel) {}
+            } message: { message in
+                Text(message)
             }
             .fileImporter(isPresented: $showFileImporter,
                           allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
@@ -555,22 +613,69 @@ private struct AddDocumentSheet: View {
         )
     }
 
-    private func save() {
+    @MainActor
+    private func save() async {
+        // 1. Resolve the bytes to upload + the local cache filename.
         var fileURL: URL? = pickedURL
         var localFilename: String? = pickedURL?.lastPathComponent
-        if pickedURL == nil, let data = photoData {
-            // Save photo to disk
+        let bytes: Data
+        let contentType: String
+
+        if let url = pickedURL {
+            // Picked from Files. Read the bytes we already copied into the
+            // app's Documents directory (see handleFileImport).
+            do {
+                bytes = try Data(contentsOf: url)
+            } catch {
+                uploadError = "Couldn't read selected file: \(error.localizedDescription)"
+                return
+            }
+            contentType = pickedFileType.mimeType
+        } else if let data = photoData {
+            // Picked from PhotosPicker. Also cache to disk for fast local preview.
             let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let url = docs.appendingPathComponent(UUID().uuidString + ".jpg")
-            try? data.write(to: url)
-            fileURL = url
-            localFilename = url.lastPathComponent
+            let local = docs.appendingPathComponent(UUID().uuidString + ".jpg")
+            try? data.write(to: local)
+            fileURL = local
+            localFilename = local.lastPathComponent
+            bytes = data
+            contentType = "image/jpeg"
+        } else {
+            uploadError = "No file selected."
+            return
         }
+
+        // 2. Upload to Firebase Storage so other family members can open it.
+        let docId = UUID().uuidString
+        let filename = pickedFilename ?? localFilename ?? "\(docId).bin"
+        let ref = Storage.storage().reference()
+            .child("famoria_documents/\(docId)/\(filename)")
+        let metadata = StorageMetadata()
+        metadata.contentType = contentType
+
+        isUploading = true
+        let remoteURLString: String
+        do {
+            _ = try await ref.putDataAsync(bytes, metadata: metadata)
+            let url = try await ref.downloadURL()
+            remoteURLString = url.absoluteString
+        } catch {
+            Log.app.error("Document upload failed: \(error.localizedDescription, privacy: .public)")
+            uploadError = "Upload failed: \(error.localizedDescription). Check Firebase Storage rules and your network connection."
+            isUploading = false
+            return
+        }
+        isUploading = false
+
+        // 3. Write the Firestore metadata document (with the remote URL so
+        //    other devices can download the file).
         let doc = FamilyDocument(
+            id: docId,
             title: title.trimmingCharacters(in: .whitespaces),
             notes: notes,
             fileURL: fileURL,
             localFilename: localFilename,
+            remoteURL: remoteURLString,
             fileType: pickedFileType,
             category: category,
             tags: tags,
@@ -598,6 +703,9 @@ private struct DocumentDetailSheet: View {
     @State private var workingDoc: FamilyDocument
     @State private var showLinkPicker = false
     @State private var showPreview = false
+    @State private var previewURL: URL? = nil
+    @State private var isFetching = false
+    @State private var fetchError: String? = nil
 
     init(store: DocumentsStore, document: FamilyDocument,
          currentUser: String, isAdmin: Bool, family: Family?,
@@ -609,6 +717,56 @@ private struct DocumentDetailSheet: View {
         self.family = family
         self.events = events
         _workingDoc = State(initialValue: document)
+    }
+
+    /// Returns a local file URL that QuickLook / ShareLink can open. If the
+    /// file is already on disk we use it directly; otherwise we download it
+    /// from Firebase Storage to a temp file and cache it for the session.
+    @MainActor
+    private func resolveLocalURL() async -> URL? {
+        if let local = workingDoc.fileURL, FileManager.default.fileExists(atPath: local.path) {
+            return local
+        }
+        // If we stored a localFilename when uploading on THIS device, try
+        // resolving it against the current Documents directory (the absolute
+        // path stored in fileURL may have been from a previous launch).
+        if let name = workingDoc.localFilename {
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let candidate = docs.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        guard let remote = workingDoc.remoteURL, let url = URL(string: remote) else {
+            fetchError = "This document has no downloadable file."
+            return nil
+        }
+
+        isFetching = true
+        defer { isFetching = false }
+        do {
+            let (tempURL, _) = try await URLSession.shared.download(from: url)
+            // Move to a named temp file so QuickLook shows the right name.
+            let suggestedName = workingDoc.localFilename ?? url.lastPathComponent
+            let dest = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(UUID().uuidString)-\(suggestedName)")
+            try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.moveItem(at: tempURL, to: dest)
+            return dest
+        } catch {
+            Log.app.error("Document download failed: \(error.localizedDescription, privacy: .public)")
+            fetchError = "Couldn't download document: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    private func openPreview() {
+        Task {
+            if let url = await resolveLocalURL() {
+                previewURL = url
+                showPreview = true
+            }
+        }
     }
 
     var body: some View {
@@ -630,13 +788,8 @@ private struct DocumentDetailSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        if let url = workingDoc.fileURL {
-                            ShareLink(item: url) {
-                                Label("Export / Share", systemImage: "square.and.arrow.up")
-                            }
-                        }
                         Button {
-                            showPreview = true
+                            openPreview()
                         } label: {
                             Label("Preview", systemImage: "eye.fill")
                         }
@@ -652,9 +805,29 @@ private struct DocumentDetailSheet: View {
                 }
             }
             .sheet(isPresented: $showPreview) {
-                if let url = workingDoc.fileURL {
+                if let url = previewURL {
                     QuickLookPreview(url: url)
                 }
+            }
+            .overlay {
+                if isFetching {
+                    Color.black.opacity(0.25).ignoresSafeArea()
+                    ProgressView("Downloading…")
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .alert(
+                "Couldn't open",
+                isPresented: Binding(
+                    get: { fetchError != nil },
+                    set: { if !$0 { fetchError = nil } }
+                ),
+                presenting: fetchError
+            ) { _ in
+                Button("OK", role: .cancel) {}
+            } message: { message in
+                Text(message)
             }
         }
     }
@@ -701,21 +874,18 @@ private struct DocumentDetailSheet: View {
 
     private var actionRow: some View {
         HStack {
-            if let url = workingDoc.fileURL {
-                ShareLink(item: url) {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                Button {
-                    showPreview = true
-                } label: {
-                    Label("Open", systemImage: "doc.viewfinder.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.purple)
+            // The file may not be on this device yet — Open downloads from
+            // Firebase Storage on demand, then hands the local URL to
+            // QuickLook (which has its own Share button in the toolbar).
+            Button {
+                openPreview()
+            } label: {
+                Label(workingDoc.remoteURL == nil ? "Open" : "Open", systemImage: "doc.viewfinder.fill")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.borderedProminent)
+            .tint(.purple)
+            .disabled(isFetching || (workingDoc.remoteURL == nil && workingDoc.fileURL == nil))
         }
     }
 

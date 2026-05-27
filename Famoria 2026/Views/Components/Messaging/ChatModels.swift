@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - Chat Model (Group or DM)
-struct Chat: Identifiable, Codable, Equatable {
+struct Chat: Identifiable, Codable, Equatable, Hashable {
     let id: String
     var name: String? // nil for DM
     var participants: [ChatParticipant]
@@ -31,13 +31,13 @@ enum MessageType: String, Codable, Equatable {
     case system // "Lauryn added John", etc.
 }
 
-struct MessageReaction: Codable, Equatable {
+struct MessageReaction: Codable, Equatable, Hashable {
     let emoji: String
     let userId: String
     let userName: String
 }
 
-struct ChatMessage: Identifiable, Codable, Equatable {
+struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     let id: String
     let chatId: String
     let senderId: String

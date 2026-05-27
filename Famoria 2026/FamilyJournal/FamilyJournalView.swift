@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 import FirebaseFirestore
 
 // MARK: - Family Journal (Tabbed Container)
@@ -121,6 +122,10 @@ private struct JournalEntriesTab: View {
         listener = db.collection("famoria_journal_entries")
             .order(by: "createdDate", descending: true)
             .addSnapshotListener { snapshot, error in
+                if let error {
+                    Log.journal.error("FamilyJournalView listener failed: \(error.localizedDescription, privacy: .public)")
+                    return
+                }
                 guard let snapshot else { return }
                 entries = snapshot.documents.compactMap { doc in
                     var data = doc.data()
@@ -131,7 +136,11 @@ private struct JournalEntriesTab: View {
     }
 
     private func saveEntry(_ entry: FamilyJournalEntry) {
-        try? db.collection("famoria_journal_entries").document(entry.id).setData(from: entry)
+        do {
+            try db.collection("famoria_journal_entries").document(entry.id).setData(from: entry)
+        } catch {
+            Log.journal.error("Failed to save journal entry: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func deleteEntry(_ id: String) {

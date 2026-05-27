@@ -1,4 +1,5 @@
 import Foundation
+import os
 import FirebaseFirestore
 
 final class FirebaseChatService {
@@ -19,10 +20,10 @@ final class FirebaseChatService {
     func fetchChats(forUserId userId: String) async throws -> [Chat] {
         let snapshot = try await chatsRef
             .whereField("participantIds", arrayContains: userId)
-            .order(by: "lastMessageTimestamp", descending: true)
             .getDocuments()
 
         return snapshot.documents.compactMap { parseChat(from: $0) }
+            .sorted { ($0.lastMessage?.timestamp ?? .distantPast) > ($1.lastMessage?.timestamp ?? .distantPast) }
     }
 
     func fetchMessages(chatId: String, limit: Int = 50) async throws -> [ChatMessage] {
@@ -81,6 +82,49 @@ final class FirebaseChatService {
             replyToId: replyTo?.id,
             replyToContent: replyTo.map { String($0.content.prefix(100)) },
             replyToSenderName: replyTo?.senderName,
+            deliveredAt: timestamp
+        )
+    }
+
+    // MARK: - Send Image
+
+    func sendImageMessage(chatId: String, senderId: String, senderName: String, imageURL: String) async throws -> ChatMessage {
+        let messageId = UUID().uuidString
+        let timestamp = Date()
+
+        let messageData: [String: Any] = [
+            "id": messageId,
+            "senderId": senderId,
+            "senderName": senderName,
+            "content": "",
+            "timestamp": Timestamp(date: timestamp),
+            "isRead": false,
+            "isSystem": false,
+            "messageType": "image",
+            "imageURL": imageURL,
+            "reactions": [],
+            "deliveredAt": Timestamp(date: timestamp)
+        ]
+
+        try await messagesRef(chatId: chatId).document(messageId).setData(messageData)
+
+        try await chatsRef.document(chatId).updateData([
+            "lastMessageContent": "Sent a photo",
+            "lastMessageSenderName": senderName,
+            "lastMessageTimestamp": Timestamp(date: timestamp)
+        ])
+
+        return ChatMessage(
+            id: messageId,
+            chatId: chatId,
+            senderId: senderId,
+            senderName: senderName,
+            content: "",
+            timestamp: timestamp,
+            isRead: false,
+            isSystem: false,
+            messageType: .image,
+            imageURL: imageURL,
             deliveredAt: timestamp
         )
     }
@@ -239,13 +283,14 @@ final class FirebaseChatService {
     func observeChats(forUserId userId: String, onChange: @escaping ([Chat]) -> Void) -> ListenerRegistration {
         chatsRef
             .whereField("participantIds", arrayContains: userId)
-            .order(by: "lastMessageTimestamp", descending: true)
-            .addSnapshotListener { snapshot, error in
-                guard let documents = snapshot?.documents else {
-                    onChange([])
+            .addSnapshotListener { [weak self] snapshot, error in
+                if let error {
+                    Log.chat.error("observeChats failed: \(error.localizedDescription, privacy: .public)")
                     return
                 }
+                guard let self, let documents = snapshot?.documents else { return }
                 let chats = documents.compactMap { self.parseChat(from: $0) }
+                    .sorted { ($0.lastMessage?.timestamp ?? .distantPast) > ($1.lastMessage?.timestamp ?? .distantPast) }
                 onChange(chats)
             }
     }
@@ -253,14 +298,34 @@ final class FirebaseChatService {
     func observeMessages(chatId: String, onChange: @escaping ([ChatMessage]) -> Void) -> ListenerRegistration {
         messagesRef(chatId: chatId)
             .order(by: "timestamp", descending: false)
-            .addSnapshotListener { snapshot, error in
-                guard let documents = snapshot?.documents else {
+            .addSnapshotListener { [weak self] snapshot, error in
+                if let error {
+                    Log.chat.error("observeMessages failed: \(error.localizedDescription, privacy: .public)")
+                    return
+                }
+                guard let self, let documents = snapshot?.documents else {
                     onChange([])
                     return
                 }
                 let messages = documents.compactMap { self.parseMessage(from: $0, chatId: chatId) }
                 onChange(messages)
             }
+    }
+
+    // MARK: - Delete
+
+    func deleteMessage(messageId: String, chatId: String) async throws {
+        try await messagesRef(chatId: chatId).document(messageId).delete()
+    }
+
+    func deleteChat(chatId: String) async throws {
+        let messagesSnapshot = try await messagesRef(chatId: chatId).getDocuments()
+        let batch = db.batch()
+        for doc in messagesSnapshot.documents {
+            batch.deleteDocument(doc.reference)
+        }
+        batch.deleteDocument(chatsRef.document(chatId))
+        try await batch.commit()
     }
 
     // MARK: - Parsing Helpers
