@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import os
 
 
 struct FamilyFeedView: View {
@@ -43,14 +44,15 @@ struct FamilyFeedView: View {
     }
     
     func addPost() {
-        let post = FamilyPost(
-            id: UUID().uuidString,
-            authorName: appState.currentUser?.name ?? "Unknown",
-            content: newPost,
-            timestamp: Date()
-        )
-        
-        appState.posts.append(post)
+        let trimmed = newPost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
         newPost = ""
+        Task {
+            do {
+                try await appState.createPost(content: trimmed)
+            } catch {
+                Log.appState.error("createPost failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 }

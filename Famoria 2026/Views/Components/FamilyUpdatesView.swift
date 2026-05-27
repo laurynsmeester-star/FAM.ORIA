@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 
 struct FamilyUpdatesView: View {
     @EnvironmentObject var appState: AppState
@@ -57,12 +58,23 @@ struct FamilyUpdatesView: View {
                     .padding(.top, 60)
                 } else {
                     LazyVStack(spacing: 12) {
-                        ForEach(sortedPosts.indices, id: \.self) { index in
+                        ForEach(sortedPosts) { post in
                             UpdateCard(
-                                post: binding(for: index),
+                                post: post,
                                 currentUserName: appState.currentUser?.name ?? "",
                                 familyMembers: familyMembers,
-                                onDelete: { deletePost(at: index) }
+                                onEdit: { newContent in
+                                    Task { await editPost(post, newContent: newContent) }
+                                },
+                                onDelete: {
+                                    Task { await deletePost(post) }
+                                },
+                                onReply: { content in
+                                    Task { await addReply(to: post, content: content) }
+                                },
+                                onReact: { emoji in
+                                    Task { await toggleReaction(emoji, on: post) }
+                                }
                             )
                         }
                     }
@@ -78,17 +90,36 @@ struct FamilyUpdatesView: View {
         appState.posts.sorted { $0.timestamp > $1.timestamp }
     }
 
-    private func binding(for sortedIndex: Int) -> Binding<FamilyPost> {
-        let sortedPost = sortedPosts[sortedIndex]
-        guard let realIndex = appState.posts.firstIndex(where: { $0.id == sortedPost.id }) else {
-            return .constant(sortedPost)
+    private func deletePost(_ post: FamilyPost) async {
+        do {
+            try await appState.deletePost(post)
+        } catch {
+            Log.appState.error("deletePost failed: \(error.localizedDescription, privacy: .public)")
         }
-        return $appState.posts[realIndex]
     }
 
-    private func deletePost(at sortedIndex: Int) {
-        let post = sortedPosts[sortedIndex]
-        appState.posts.removeAll { $0.id == post.id }
+    private func editPost(_ post: FamilyPost, newContent: String) async {
+        do {
+            try await appState.updatePost(post, newContent: newContent)
+        } catch {
+            Log.appState.error("updatePost failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func addReply(to post: FamilyPost, content: String) async {
+        do {
+            try await appState.addReply(to: post, content: content)
+        } catch {
+            Log.appState.error("addReply failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func toggleReaction(_ emoji: String, on post: FamilyPost) async {
+        do {
+            try await appState.toggleReaction(emoji, on: post)
+        } catch {
+            Log.appState.error("toggleReaction failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private var mentionSuggestions: some View {
@@ -132,25 +163,28 @@ struct FamilyUpdatesView: View {
     private func addPost() {
         let trimmed = newPost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let post = FamilyPost(
-            id: UUID().uuidString,
-            authorName: appState.currentUser?.name ?? "Unknown",
-            content: trimmed,
-            timestamp: Date()
-        )
-        appState.posts.append(post)
         newPost = ""
         showMentionPicker = false
+        Task {
+            do {
+                try await appState.createPost(content: trimmed)
+            } catch {
+                Log.appState.error("createPost failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 }
 
 // MARK: - Update Card
 
 private struct UpdateCard: View {
-    @Binding var post: FamilyPost
+    let post: FamilyPost
     let currentUserName: String
     let familyMembers: [User]
+    var onEdit: (String) -> Void = { _ in }
     var onDelete: () -> Void = {}
+    var onReply: (String) -> Void = { _ in }
+    var onReact: (String) -> Void = { _ in }
 
     @State private var showReplyField = false
     @State private var replyText = ""
@@ -218,7 +252,7 @@ private struct UpdateCard: View {
                         Button("Save") {
                             let trimmed = editText.trimmingCharacters(in: .whitespacesAndNewlines)
                             if !trimmed.isEmpty {
-                                post.content = trimmed
+                                onEdit(trimmed)
                             }
                             isEditing = false
                         }
@@ -339,8 +373,7 @@ private struct UpdateCard: View {
                     Button {
                         let trimmed = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !trimmed.isEmpty else { return }
-                        let reply = PostReply(authorName: currentUserName, content: trimmed)
-                        post.replies.append(reply)
+                        onReply(trimmed)
                         replyText = ""
                     } label: {
                         Image(systemName: "paperplane.fill")
@@ -367,18 +400,7 @@ private struct UpdateCard: View {
     }
 
     private func toggleReaction(_ emoji: String) {
-        if let idx = post.reactions.firstIndex(where: { $0.emoji == emoji }) {
-            if post.reactions[idx].userNames.contains(currentUserName) {
-                post.reactions[idx].userNames.removeAll { $0 == currentUserName }
-                if post.reactions[idx].userNames.isEmpty {
-                    post.reactions.remove(at: idx)
-                }
-            } else {
-                post.reactions[idx].userNames.append(currentUserName)
-            }
-        } else {
-            post.reactions.append(PostReaction(emoji: emoji, userNames: [currentUserName]))
-        }
+        onReact(emoji)
     }
 
     @ViewBuilder

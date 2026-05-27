@@ -65,6 +65,35 @@ final class FirebaseAuthService: AuthService {
         try Auth.auth().signOut()
     }
 
+    /// Updates the signed-in user's display name in Firebase Auth, the
+    /// `users/{userId}` Firestore document, and the family's members
+    /// subcollection (so the change is visible to other family members).
+    func updateUserName(userId: String, newName: String, familyId: String?) async throws {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // 1. Firebase Auth profile
+        if let fbUser = Auth.auth().currentUser, fbUser.uid == userId {
+            let change = fbUser.createProfileChangeRequest()
+            change.displayName = trimmed
+            try await change.commitChanges()
+        }
+
+        // 2. users/{userId}
+        try await db.collection("users").document(userId).setData([
+            "name": trimmed
+        ], merge: true)
+
+        // 3. families/{familyId}/members/{userId}
+        if let familyId {
+            try await db.collection("families")
+                .document(familyId)
+                .collection("members")
+                .document(userId)
+                .setData(["name": trimmed], merge: true)
+        }
+    }
+
     /// Restore the currently signed-in Firebase Auth user (session persists across launches).
     func restoreSession() async -> User? {
         guard let fbUser = Auth.auth().currentUser else { return nil }

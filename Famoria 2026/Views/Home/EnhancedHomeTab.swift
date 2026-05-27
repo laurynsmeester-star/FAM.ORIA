@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 
 struct EnhancedHomeTab: View {
     @EnvironmentObject var appState: AppState
@@ -173,15 +174,16 @@ struct EnhancedHomeTab: View {
     }
 
     private func addPost() {
-        guard !newPost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let post = FamilyPost(
-            id: UUID().uuidString,
-            authorName: appState.currentUser?.name ?? "Unknown",
-            content: newPost,
-            timestamp: Date()
-        )
-        appState.posts.append(post)
+        let trimmed = newPost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
         newPost = ""
+        Task {
+            do {
+                try await appState.createPost(content: trimmed)
+            } catch {
+                Log.appState.error("createPost failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 }
 

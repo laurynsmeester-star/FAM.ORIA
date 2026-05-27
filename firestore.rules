@@ -68,6 +68,11 @@ service cloud.firestore {
       allow write: if isSignedIn();
     }
 
+    // Legacy invites collection (used by FirebaseFamilyService alongside invite_codes).
+    match /invites/{inviteId} {
+      allow read, write: if isSignedIn();
+    }
+
     // Notifications — fan-out write model. Any signed-in user can write
     // a notification doc (the client encodes the recipient as userId), but
     // only the recipient can read or update their own notifications.
@@ -90,8 +95,37 @@ service cloud.firestore {
     match /famoria_documents/{docId} {
       allow read, write: if isSignedIn();
     }
+    // Document comments — the app writes to `famoria_doc_comments`.
+    // `famoria_document_comments` is kept for any legacy/backfilled data.
+    match /famoria_doc_comments/{commentId} {
+      allow read, write: if isSignedIn();
+    }
     match /famoria_document_comments/{commentId} {
       allow read, write: if isSignedIn();
+    }
+
+    // Journal entries (Family Journal feature).
+    match /famoria_journal_entries/{entryId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Recipes.
+    match /famoria_recipes/{recipeId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Family health records.
+    match /famoria_health_records/{recordId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Per-user personal tasks.
+    match /famoria_user_tasks/{userId} {
+      allow read, write: if isSelf(userId);
+
+      match /tasks/{taskId} {
+        allow read, write: if isSelf(userId);
+      }
     }
 
     // Chats + messages.

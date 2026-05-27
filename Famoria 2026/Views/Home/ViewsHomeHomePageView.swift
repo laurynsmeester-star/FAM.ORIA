@@ -8,6 +8,7 @@
 
 import SwiftUI
 import EventKit
+import os
 
 /// The main home page view shown after successful authentication
 struct HomePageView: View {
@@ -106,15 +107,16 @@ struct HomeTab: View {
     }
 
     private func addPost() {
-        guard !newPost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let post = FamilyPost(
-            id: UUID().uuidString,
-            authorName: appState.currentUser?.name ?? "Unknown",
-            content: newPost,
-            timestamp: Date()
-        )
-        appState.posts.append(post)
+        let trimmed = newPost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
         newPost = ""
+        Task {
+            do {
+                try await appState.createPost(content: trimmed)
+            } catch {
+                Log.appState.error("createPost failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 }
 
@@ -993,8 +995,14 @@ struct ProfileTab: View {
                 TextField("Your name", text: $editedName)
                 Button("Cancel", role: .cancel) { }
                 Button("Save") {
-                    if !editedName.trimmingCharacters(in: .whitespaces).isEmpty {
-                        appState.currentUser?.name = editedName
+                    let trimmed = editedName.trimmingCharacters(in: .whitespaces)
+                    guard !trimmed.isEmpty else { return }
+                    Task {
+                        do {
+                            try await appState.updateUserName(trimmed)
+                        } catch {
+                            Log.appState.error("updateUserName failed: \(error.localizedDescription, privacy: .public)")
+                        }
                     }
                 }
             } message: {

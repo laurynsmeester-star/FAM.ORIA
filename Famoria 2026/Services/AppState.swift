@@ -521,11 +521,61 @@ final class AppState: ObservableObject {
         guard let family = currentFamily else {
             throw AppStateError.noFamily
         }
-        
+
         try await contentService.deletePost(familyId: family.id, postId: post.id)
-        
+
         // Remove optimistically
         self.posts.removeAll { $0.id == post.id }
+    }
+
+    /// Edits a post's content
+    func updatePost(_ post: FamilyPost, newContent: String) async throws {
+        guard let family = currentFamily else { throw AppStateError.noFamily }
+        try await contentService.updatePost(familyId: family.id, postId: post.id, newContent: newContent)
+        if let idx = self.posts.firstIndex(where: { $0.id == post.id }) {
+            self.posts[idx].content = newContent
+        }
+    }
+
+    /// Adds a reply to a post
+    func addReply(to post: FamilyPost, content: String) async throws {
+        guard let family = currentFamily,
+              let user = currentUser else { throw AppStateError.noFamily }
+        let reply = PostReply(authorName: user.name, content: content)
+        try await contentService.addReply(familyId: family.id, postId: post.id, reply: reply)
+        if let idx = self.posts.firstIndex(where: { $0.id == post.id }) {
+            self.posts[idx].replies.append(reply)
+        }
+    }
+
+    /// Updates the current user's display name in Firebase Auth, the
+    /// `users` document, and the family's members list.
+    func updateUserName(_ newName: String) async throws {
+        guard let user = currentUser,
+              let authService = auth as? FirebaseAuthService else { return }
+        try await authService.updateUserName(
+            userId: user.id,
+            newName: newName,
+            familyId: user.familyId
+        )
+        self.currentUser?.name = newName
+        if let familyId = user.familyId,
+           let idx = currentFamily?.members.firstIndex(where: { $0.id == user.id }) {
+            currentFamily?.members[idx].name = newName
+            _ = familyId
+        }
+    }
+
+    /// Toggles a user's reaction emoji on a post
+    func toggleReaction(_ emoji: String, on post: FamilyPost) async throws {
+        guard let family = currentFamily,
+              let user = currentUser else { throw AppStateError.noFamily }
+        try await contentService.toggleReaction(
+            familyId: family.id,
+            postId: post.id,
+            emoji: emoji,
+            userName: user.name
+        )
     }
     
     /// Deletes an event

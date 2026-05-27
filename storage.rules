@@ -22,10 +22,17 @@ service firebase.storage {
           && request.resource.contentType.matches('image/.*');
     }
 
-    // Album photos — any signed-in user can read/write under famoria_albums.
+    // Limit video uploads to <= 200 MB.
+    function isReasonableVideo() {
+      return request.resource.size < 200 * 1024 * 1024
+          && request.resource.contentType.matches('video/.*');
+    }
+
+    // Album media — photos (<= 10 MB) and videos (<= 200 MB).
     match /famoria_albums/{albumId}/{filename} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && (request.resource == null || isReasonableImage());
+      allow write: if isSignedIn() &&
+        (request.resource == null || isReasonableImage() || isReasonableVideo());
     }
 
     // Chat image attachments.

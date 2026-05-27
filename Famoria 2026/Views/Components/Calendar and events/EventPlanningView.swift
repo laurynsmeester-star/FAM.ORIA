@@ -12,6 +12,8 @@
 
 import SwiftUI
 import Combine
+import FirebaseFirestore
+import os
 
 // MARK: - Store / View model
 
@@ -25,60 +27,132 @@ final class EventPlanningStore: ObservableObject {
     @Published var documents: [EventDocument] = []
 
     let event: FamilyEventV2
+
+    private let service = FirebaseEventPlanningService()
+    private var familyId: String?
+    private var listeners: [ListenerRegistration] = []
+
     init(event: FamilyEventV2) { self.event = event }
+
+    deinit {
+        for l in listeners { l.remove() }
+    }
+
+    /// Begin listening to Firestore for this event's planning data. Idempotent.
+    func start(familyId: String) {
+        guard self.familyId != familyId else { return }
+        self.familyId = familyId
+        for l in listeners { l.remove() }
+        listeners.removeAll()
+
+        listeners.append(service.observeRSVPs(familyId: familyId, eventId: event.id) { [weak self] items in
+            Task { @MainActor in self?.rsvps = items }
+        })
+        listeners.append(service.observeTasks(familyId: familyId, eventId: event.id) { [weak self] items in
+            Task { @MainActor in self?.tasks = items }
+        })
+        listeners.append(service.observeSchedule(familyId: familyId, eventId: event.id) { [weak self] items in
+            Task { @MainActor in self?.schedule = items.sorted { $0.time < $1.time } }
+        })
+        listeners.append(service.observePolls(familyId: familyId, eventId: event.id) { [weak self] items in
+            Task { @MainActor in self?.polls = items }
+        })
+        listeners.append(service.observeVotes(familyId: familyId, eventId: event.id) { [weak self] items in
+            Task { @MainActor in self?.votes = items }
+        })
+        listeners.append(service.observeDocuments(familyId: familyId, eventId: event.id) { [weak self] items in
+            Task { @MainActor in self?.documents = items.sorted { $0.addedDate > $1.addedDate } }
+        })
+    }
 
     // RSVP
     func addRSVPs(for members: [String], notes: String) {
-        let new = members.map {
-            EventRSVP(eventId: event.id, memberName: $0, status: .pending, guests: 0, notes: notes)
+        guard let familyId else { return }
+        for memberName in members {
+            let rsvp = EventRSVP(eventId: event.id, memberName: memberName, status: .pending, guests: 0, notes: notes)
+            Task { try? await service.upsert(rsvp: rsvp, familyId: familyId, eventId: event.id) }
         }
-        rsvps.append(contentsOf: new)
     }
     func updateRSVP(_ id: String, status: RSVPStatus) {
-        guard let i = rsvps.firstIndex(where: { $0.id == id }) else { return }
-        rsvps[i].status = status
+        guard let familyId, let i = rsvps.firstIndex(where: { $0.id == id }) else { return }
+        var updated = rsvps[i]
+        updated.status = status
+        Task { try? await service.upsert(rsvp: updated, familyId: familyId, eventId: event.id) }
     }
     func deleteRSVP(_ id: String) {
-        rsvps.removeAll { $0.id == id }
+        guard let familyId else { return }
+        Task { try? await service.delete(rsvpId: id, familyId: familyId, eventId: event.id) }
     }
 
     // Tasks
-    func addTask(_ task: EventTask) { tasks.append(task) }
-    func toggleTask(_ id: String) {
-        guard let i = tasks.firstIndex(where: { $0.id == id }) else { return }
-        tasks[i].isCompleted.toggle()
+    func addTask(_ task: EventTask) {
+        guard let familyId else { return }
+        Task { try? await service.upsert(task: task, familyId: familyId, eventId: event.id) }
     }
-    func deleteTask(_ id: String) { tasks.removeAll { $0.id == id } }
+    func toggleTask(_ id: String) {
+        guard let familyId, let i = tasks.firstIndex(where: { $0.id == id }) else { return }
+        var updated = tasks[i]
+        updated.isCompleted.toggle()
+        Task { try? await service.upsert(task: updated, familyId: familyId, eventId: event.id) }
+    }
+    func deleteTask(_ id: String) {
+        guard let familyId else { return }
+        Task { try? await service.delete(taskId: id, familyId: familyId, eventId: event.id) }
+    }
 
     // Schedule
-    func addScheduleItem(_ item: EventScheduleItem) { schedule.append(item) }
-    func deleteScheduleItem(_ id: String) { schedule.removeAll { $0.id == id } }
+    func addScheduleItem(_ item: EventScheduleItem) {
+        guard let familyId else { return }
+        Task { try? await service.upsert(scheduleItem: item, familyId: familyId, eventId: event.id) }
+    }
+    func deleteScheduleItem(_ id: String) {
+        guard let familyId else { return }
+        Task { try? await service.delete(scheduleItemId: id, familyId: familyId, eventId: event.id) }
+    }
 
     // Polls
-    func addPoll(_ poll: EventPoll) { polls.append(poll) }
+    func addPoll(_ poll: EventPoll) {
+        guard let familyId else { return }
+        Task { try? await service.upsert(poll: poll, familyId: familyId, eventId: event.id) }
+    }
     func deletePoll(_ id: String) {
-        polls.removeAll { $0.id == id }
-        votes.removeAll { $0.pollId == id }
+        guard let familyId else { return }
+        Task { try? await service.delete(pollId: id, familyId: familyId, eventId: event.id) }
     }
     func togglePollClosed(_ id: String) {
-        guard let i = polls.firstIndex(where: { $0.id == id }) else { return }
-        polls[i].isClosed.toggle()
+        guard let familyId, let i = polls.firstIndex(where: { $0.id == id }) else { return }
+        var updated = polls[i]
+        updated.isClosed.toggle()
+        Task { try? await service.upsert(poll: updated, familyId: familyId, eventId: event.id) }
     }
     func castVote(pollId: String, option: String, voter: String) {
-        guard let poll = polls.first(where: { $0.id == pollId }) else { return }
-        if let existing = votes.firstIndex(where: { $0.pollId == pollId && $0.voterName == voter && $0.selectedOption == option }) {
-            votes.remove(at: existing)
+        guard let familyId, let poll = polls.first(where: { $0.id == pollId }) else { return }
+        // Toggle off if user already voted for this exact option.
+        if let existing = votes.first(where: { $0.pollId == pollId && $0.voterName == voter && $0.selectedOption == option }) {
+            Task { try? await service.delete(voteId: existing.id, familyId: familyId, eventId: event.id) }
             return
         }
-        if !poll.multipleChoice {
-            votes.removeAll { $0.pollId == pollId && $0.voterName == voter }
+        Task {
+            if !poll.multipleChoice {
+                // Clear the user's previous vote(s) for this poll.
+                for prior in self.votes where prior.pollId == pollId && prior.voterName == voter {
+                    try? await service.delete(voteId: prior.id, familyId: familyId, eventId: event.id)
+                }
+            }
+            let newVote = PollVote(pollId: pollId, voterName: voter, selectedOption: option)
+            try? await service.upsert(vote: newVote, familyId: familyId, eventId: event.id)
         }
-        votes.append(PollVote(pollId: pollId, voterName: voter, selectedOption: option))
     }
 
     // Documents
-    func addDocument(_ doc: EventDocument) { documents.append(doc) }
-    func deleteDocument(_ id: String) { documents.removeAll { $0.id == id } }
+    func addDocument(_ doc: EventDocument) {
+        guard let familyId else { return }
+        Task { try? await service.upsert(document: doc, familyId: familyId, eventId: event.id) }
+    }
+    func deleteDocument(_ id: String) {
+        guard let familyId else { return }
+        Task { try? await service.delete(documentId: id, familyId: familyId, eventId: event.id) }
+    }
 }
 
 // MARK: - Event Document Model
@@ -178,6 +252,11 @@ struct EventPlanningView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
+                }
+            }
+            .task {
+                if let familyId = appState.currentFamily?.id {
+                    store.start(familyId: familyId)
                 }
             }
         }

@@ -23,26 +23,89 @@ final class FirebaseContentService {
     func createPost(familyId: String, authorName: String, authorId: String, content: String) async throws -> FamilyPost {
         let postId = UUID().uuidString
         let timestamp = Date()
-        
+
         let post = FamilyPost(
             id: postId,
             authorName: authorName,
             content: content,
             timestamp: timestamp
         )
-        
+
         let postData: [String: Any] = [
             "id": post.id,
             "authorName": authorName,
             "authorId": authorId,
             "content": content,
             "timestamp": Timestamp(date: timestamp),
+            "reactions": [],
+            "replies": [],
             "createdAt": FieldValue.serverTimestamp()
         ]
-        
+
         try await postsRef(familyId: familyId).document(postId).setData(postData)
-        
+
         return post
+    }
+
+    // MARK: - Post encoding helpers
+
+    private static func encodeReactions(_ reactions: [PostReaction]) -> [[String: Any]] {
+        reactions.map { ["emoji": $0.emoji, "userNames": $0.userNames] }
+    }
+
+    private static func decodeReactions(_ raw: [[String: Any]]) -> [PostReaction] {
+        raw.compactMap { dict in
+            guard let emoji = dict["emoji"] as? String else { return nil }
+            let userNames = dict["userNames"] as? [String] ?? []
+            return PostReaction(emoji: emoji, userNames: userNames)
+        }
+    }
+
+    private static func encodeReplies(_ replies: [PostReply]) -> [[String: Any]] {
+        replies.map { reply in
+            [
+                "id": reply.id,
+                "authorName": reply.authorName,
+                "content": reply.content,
+                "timestamp": Timestamp(date: reply.timestamp)
+            ]
+        }
+    }
+
+    private static func decodeReplies(_ raw: [[String: Any]]) -> [PostReply] {
+        raw.compactMap { dict in
+            guard let id = dict["id"] as? String,
+                  let authorName = dict["authorName"] as? String,
+                  let content = dict["content"] as? String else { return nil }
+            let timestamp: Date
+            if let ts = dict["timestamp"] as? Timestamp {
+                timestamp = ts.dateValue()
+            } else if let d = dict["timestamp"] as? Date {
+                timestamp = d
+            } else {
+                timestamp = Date()
+            }
+            return PostReply(id: id, authorName: authorName, content: content, timestamp: timestamp)
+        }
+    }
+
+    private static func parsePost(from data: [String: Any]) -> FamilyPost? {
+        guard let id = data["id"] as? String,
+              let authorName = data["authorName"] as? String,
+              let content = data["content"] as? String,
+              let timestamp = data["timestamp"] as? Timestamp else {
+            return nil
+        }
+        let reactionsRaw = data["reactions"] as? [[String: Any]] ?? []
+        let repliesRaw = data["replies"] as? [[String: Any]] ?? []
+        return FamilyPost(
+            id: id,
+            authorName: authorName,
+            content: content,
+            timestamp: timestamp.dateValue(),
+            reactions: decodeReactions(reactionsRaw),
+            replies: decodeReplies(repliesRaw)
+        )
     }
     
     /// Fetches all posts for a family, ordered by timestamp (newest first)
@@ -51,30 +114,15 @@ final class FirebaseContentService {
             .order(by: "timestamp", descending: true)
             .limit(to: limit)
             .getDocuments()
-        
-        return snapshot.documents.compactMap { doc -> FamilyPost? in
-            let data = doc.data()
-            guard let id = data["id"] as? String,
-                  let authorName = data["authorName"] as? String,
-                  let content = data["content"] as? String,
-                  let timestamp = data["timestamp"] as? Timestamp else {
-                return nil
-            }
-            
-            return FamilyPost(
-                id: id,
-                authorName: authorName,
-                content: content,
-                timestamp: timestamp.dateValue()
-            )
-        }
+
+        return snapshot.documents.compactMap { Self.parsePost(from: $0.data()) }
     }
-    
+
     /// Deletes a post
     func deletePost(familyId: String, postId: String) async throws {
         try await postsRef(familyId: familyId).document(postId).delete()
     }
-    
+
     /// Updates a post's content
     func updatePost(familyId: String, postId: String, newContent: String) async throws {
         try await postsRef(familyId: familyId).document(postId).updateData([
@@ -82,7 +130,65 @@ final class FirebaseContentService {
             "editedAt": FieldValue.serverTimestamp()
         ])
     }
-    
+
+    /// Adds a reply to a post (writes the updated replies array atomically).
+    func addReply(familyId: String, postId: String, reply: PostReply) async throws {
+        let docRef = postsRef(familyId: familyId).document(postId)
+        _ = try await db.runTransaction { txn, errorPointer -> Any? in
+            let snapshot: DocumentSnapshot
+            do {
+                snapshot = try txn.getDocument(docRef)
+            } catch let fetchError as NSError {
+                errorPointer?.pointee = fetchError
+                return nil
+            }
+            var replies = (snapshot.data()?["replies"] as? [[String: Any]]) ?? []
+            replies.append([
+                "id": reply.id,
+                "authorName": reply.authorName,
+                "content": reply.content,
+                "timestamp": Timestamp(date: reply.timestamp)
+            ])
+            txn.updateData(["replies": replies], forDocument: docRef)
+            return nil
+        }
+    }
+
+    /// Toggles a user's reaction emoji on a post. Adds the user to the emoji's
+    /// userNames list if absent; removes them (and the whole reaction if empty)
+    /// if present. Uses a transaction so concurrent reactions don't clobber.
+    func toggleReaction(familyId: String, postId: String, emoji: String, userName: String) async throws {
+        let docRef = postsRef(familyId: familyId).document(postId)
+        _ = try await db.runTransaction { txn, errorPointer -> Any? in
+            let snapshot: DocumentSnapshot
+            do {
+                snapshot = try txn.getDocument(docRef)
+            } catch let fetchError as NSError {
+                errorPointer?.pointee = fetchError
+                return nil
+            }
+            var reactions = (snapshot.data()?["reactions"] as? [[String: Any]]) ?? []
+
+            if let idx = reactions.firstIndex(where: { ($0["emoji"] as? String) == emoji }) {
+                var userNames = reactions[idx]["userNames"] as? [String] ?? []
+                if let userIdx = userNames.firstIndex(of: userName) {
+                    userNames.remove(at: userIdx)
+                } else {
+                    userNames.append(userName)
+                }
+                if userNames.isEmpty {
+                    reactions.remove(at: idx)
+                } else {
+                    reactions[idx]["userNames"] = userNames
+                }
+            } else {
+                reactions.append(["emoji": emoji, "userNames": [userName]])
+            }
+            txn.updateData(["reactions": reactions], forDocument: docRef)
+            return nil
+        }
+    }
+
     /// Sets up a real-time listener for posts
     func observePosts(familyId: String, onChange: @escaping ([FamilyPost]) -> Void) -> ListenerRegistration {
         let listener = postsRef(familyId: familyId)
@@ -97,27 +203,9 @@ final class FirebaseContentService {
                     onChange([])
                     return
                 }
-                
-                let posts = documents.compactMap { doc -> FamilyPost? in
-                    let data = doc.data()
-                    guard let id = data["id"] as? String,
-                          let authorName = data["authorName"] as? String,
-                          let content = data["content"] as? String,
-                          let timestamp = data["timestamp"] as? Timestamp else {
-                        return nil
-                    }
-                    
-                    return FamilyPost(
-                        id: id,
-                        authorName: authorName,
-                        content: content,
-                        timestamp: timestamp.dateValue()
-                    )
-                }
-                
-                onChange(posts)
+                onChange(documents.compactMap { Self.parsePost(from: $0.data()) })
             }
-        
+
         return listener
     }
     
