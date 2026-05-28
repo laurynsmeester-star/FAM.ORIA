@@ -599,8 +599,8 @@ struct PhotoMemoriesSection: View {
     private var displayed: [Album] { Array(albums.prefix(4)) }
 
     let columns = [
-        GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10)
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
     ]
 
     var body: some View {
@@ -608,13 +608,13 @@ struct PhotoMemoriesSection: View {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Photo Memories", destination: "Albums")
 
-                LazyVGrid(columns: columns, spacing: 10) {
+                LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(displayed) { album in
                         AlbumThumbnail(album: album)
                     }
                 }
-                .padding(.horizontal)
             }
+            .padding(.horizontal)
         }
     }
 }
@@ -623,40 +623,45 @@ private struct AlbumThumbnail: View {
     let album: Album
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // Cover image or gradient placeholder (mirrors Home.jsx camera placeholder)
-            if let url = album.coverImage, let imageUrl = URL(string: url) {
-                AsyncImage(url: imageUrl) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    default:
-                        albumPlaceholder
+        GeometryReader { geo in
+            ZStack(alignment: .bottom) {
+                // Cover image or gradient placeholder
+                if let url = album.coverImage, let imageUrl = URL(string: url) {
+                    AsyncImage(url: imageUrl) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .clipped()
+                        default:
+                            albumPlaceholder
+                        }
                     }
+                } else {
+                    albumPlaceholder
                 }
-            } else {
-                albumPlaceholder
+
+                // Title overlay
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.7)],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
+
+                Text(album.title)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            // Title overlay  (mirrors `absolute inset-x-0 bottom-0 bg-gradient-to-t` in Home.jsx)
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.7)],
-                startPoint: .center,
-                endPoint: .bottom
-            )
-
-            Text(album.title)
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: geo.size.width, height: geo.size.height)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
         }
         .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
         .shadow(color: .black.opacity(0.1), radius: 6, y: 3)
     }
 

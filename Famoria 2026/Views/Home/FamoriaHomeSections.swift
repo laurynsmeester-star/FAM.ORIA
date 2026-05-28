@@ -563,6 +563,13 @@ struct UserTasksCard: View {
     @State private var newTaskText = ""
     @State private var showAddField = false
 
+    /// Combined list: personal tasks first, then event tasks the user is
+    /// assigned to. Limited to a few rows because the card sits in a side-
+    /// by-side column on the home page.
+    private var combinedRowCount: Int {
+        store.tasks.count + store.assignedEventTasks.count
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -578,7 +585,7 @@ struct UserTasksCard: View {
                 .accessibilityLabel("Add task")
             }
 
-            if store.tasks.isEmpty && !showAddField {
+            if combinedRowCount == 0 && !showAddField {
                 Text("No tasks yet")
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -595,6 +602,20 @@ struct UserTasksCard: View {
                             .foregroundColor(task.isDone ? .green : .secondary)
                     }
                     .buttonStyle(.plain)
+
+                    Text(task.title)
+                        .font(.caption)
+                        .strikethrough(task.isDone)
+                        .foregroundColor(task.isDone ? .secondary : .primary)
+                        .lineLimit(1)
+                }
+            }
+
+            ForEach(store.assignedEventTasks.prefix(max(0, 4 - store.tasks.count)), id: \.id) { task in
+                HStack(spacing: 8) {
+                    Image(systemName: task.isDone ? "checkmark.circle.fill" : "calendar.circle")
+                        .font(.subheadline)
+                        .foregroundColor(task.isDone ? .green : .blue)
 
                     Text(task.title)
                         .font(.caption)
@@ -628,6 +649,9 @@ struct UserTasksCard: View {
         .onChange(of: appState.currentUser?.id) { _, _ in
             startIfPossible()
         }
+        .onChange(of: appState.currentFamily?.id) { _, _ in
+            startIfPossible()
+        }
     }
 
     private func startIfPossible() {
@@ -636,6 +660,10 @@ struct UserTasksCard: View {
             return
         }
         store.start(userId: uid)
+        if let familyId = appState.currentFamily?.id,
+           let name = appState.currentUser?.name, !name.isEmpty {
+            store.startAssignedEventTasks(familyId: familyId, userName: name)
+        }
     }
 
     private func addTask() {

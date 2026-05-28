@@ -54,46 +54,7 @@ struct EnhancedHomeTab: View {
                 // 1. Greeting + avatar
                 GreetingHeaderView(user: appState.currentUser)
 
-                // 2. Family banner
-                FamilyBannerCard(familyName: appState.currentFamily?.name ?? "Our Family")
-
-                // 3. Family Members horizontal scroll
-                FamilyMembersSection(
-                    members: appState.currentFamily?.members ?? [],
-                    onMemberTap: { profileMember = $0 }
-                )
-                .padding(.horizontal)
-
-                // 4. Quick links
-                QuickLinksRow(onSelect: { name in
-                    switch name {
-                    case "Messages": onNavigate(.chat)
-                    case "Events":   onNavigate(.events)
-                    case "Albums":   onNavigate(.albums)
-                    default: break
-                    }
-                })
-
-                // 5. Updates summary card — each row links to its source location
-                UpdatesSection(
-                    latestMessage: derivedMessages.first,
-                    hasUpcomingEvents: !appState.events.isEmpty,
-                    hasRecentAlbums: !derivedAlbums.isEmpty,
-                    nextEventTitle: nextOrLatestEvent?.title,
-                    nextEventDate: nextOrLatestEvent?.date,
-                    recentAlbumTitle: derivedAlbums.first?.title,
-                    onMessageTap: { onNavigate(.chat) },
-                    onEventTap: {
-                        if let d = nextOrLatestEvent?.date {
-                            appState.pendingEventDate = d
-                        }
-                        onNavigate(.events)
-                    },
-                    onAlbumTap: { onNavigate(.albums) }
-                )
-                .padding(.horizontal)
-
-                // 5b. Tasks + Countdown side by side (sits directly under Updates)
+                // 2. Tasks + Countdown (header row — replaces the family banner)
                 HStack(alignment: .top, spacing: 12) {
                     UserTasksCard()
                         .frame(maxWidth: .infinity)
@@ -116,6 +77,32 @@ struct EnhancedHomeTab: View {
                     )
                     .frame(maxWidth: .infinity)
                 }
+                .padding(.horizontal)
+
+                // 3. Family Members horizontal scroll
+                FamilyMembersSection(
+                    members: appState.currentFamily?.members ?? [],
+                    onMemberTap: { profileMember = $0 }
+                )
+                .padding(.horizontal)
+
+                // 4. Updates summary card — each row links to its source location
+                UpdatesSection(
+                    latestMessage: derivedMessages.first,
+                    hasUpcomingEvents: !appState.events.isEmpty,
+                    hasRecentAlbums: !derivedAlbums.isEmpty,
+                    nextEventTitle: nextOrLatestEvent?.title,
+                    nextEventDate: nextOrLatestEvent?.date,
+                    recentAlbumTitle: derivedAlbums.first?.title,
+                    onMessageTap: { onNavigate(.chat) },
+                    onEventTap: {
+                        if let d = nextOrLatestEvent?.date {
+                            appState.pendingEventDate = d
+                        }
+                        onNavigate(.events)
+                    },
+                    onAlbumTap: { onNavigate(.albums) }
+                )
                 .padding(.horizontal)
 
                 // 6. AI-powered quick actions grid

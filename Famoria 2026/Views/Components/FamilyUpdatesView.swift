@@ -1,13 +1,61 @@
 import SwiftUI
 import os
+import FirebaseFirestore
+
+/// One thing the user can @-mention in a post. Wraps anything in the app
+/// that has its own page (member, event, album, journal entry, recipe,
+/// document) so all of them appear in the same picker.
+struct Mentionable: Identifiable, Hashable {
+    enum Kind: String {
+        case member, event, album, journal, recipe, document
+        var icon: String {
+            switch self {
+            case .member:   return "person.fill"
+            case .event:    return "calendar"
+            case .album:    return "photo.on.rectangle"
+            case .journal:  return "book.closed.fill"
+            case .recipe:   return "fork.knife"
+            case .document: return "doc.text.fill"
+            }
+        }
+        var color: Color {
+            switch self {
+            case .member:   return .purple
+            case .event:    return .orange
+            case .album:    return .pink
+            case .journal:  return .green
+            case .recipe:   return .red
+            case .document: return .blue
+            }
+        }
+    }
+    let id: String
+    let name: String
+    let kind: Kind
+}
 
 struct FamilyUpdatesView: View {
     @EnvironmentObject var appState: AppState
     @State private var newPost = ""
     @State private var showMentionPicker = false
+    @State private var extraMentionables: [Mentionable] = []
 
     private var familyMembers: [User] {
         appState.currentFamily?.members ?? []
+    }
+
+    /// All things the user can @-mention right now, in the order they should
+    /// appear in the picker (members first, then events, then everything
+    /// else loaded from Firestore).
+    private var mentionables: [Mentionable] {
+        var items: [Mentionable] = familyMembers.map {
+            Mentionable(id: "member-\($0.id)", name: $0.name, kind: .member)
+        }
+        items.append(contentsOf: appState.events.prefix(20).map {
+            Mentionable(id: "event-\($0.id)", name: $0.title, kind: .event)
+        })
+        items.append(contentsOf: extraMentionables)
+        return items
     }
 
     var body: some View {
@@ -84,6 +132,9 @@ struct FamilyUpdatesView: View {
             .padding(.bottom, 20)
         }
         .background(Color(.systemGroupedBackground))
+        .task {
+            await loadExtraMentionables()
+        }
     }
 
     private var sortedPosts: [FamilyPost] {
@@ -125,27 +176,22 @@ struct FamilyUpdatesView: View {
     private var mentionSuggestions: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(familyMembers) { member in
+                ForEach(mentionables) { item in
                     Button {
-                        // Replace trailing @ with @Name
-                        if newPost.hasSuffix("@") {
-                            newPost = String(newPost.dropLast()) + "@\(member.name) "
-                        } else {
-                            newPost += "@\(member.name) "
-                        }
-                        showMentionPicker = false
+                        insertMention(item.name)
                     } label: {
                         HStack(spacing: 6) {
                             Circle()
-                                .fill(Color.purple.opacity(0.2))
+                                .fill(item.kind.color.opacity(0.2))
                                 .frame(width: 24, height: 24)
                                 .overlay(
-                                    Text(String(member.name.prefix(1)).uppercased())
+                                    Image(systemName: item.kind.icon)
                                         .font(.caption2.weight(.bold))
-                                        .foregroundColor(.purple)
+                                        .foregroundColor(item.kind.color)
                                 )
-                            Text(member.name)
+                            Text(item.name)
                                 .font(.caption.weight(.medium))
+                                .lineLimit(1)
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
@@ -157,6 +203,48 @@ struct FamilyUpdatesView: View {
                 }
             }
             .padding(.horizontal, 4)
+        }
+    }
+
+    private func insertMention(_ name: String) {
+        if newPost.hasSuffix("@") {
+            newPost = String(newPost.dropLast()) + "@\(name) "
+        } else {
+            newPost += "@\(name) "
+        }
+        showMentionPicker = false
+    }
+
+    /// One-shot fetch of recent items in collections that have their own
+    /// page in the app. Used to populate the @-mention picker without
+    /// opening live listeners.
+    private func loadExtraMentionables() async {
+        let db = Firestore.firestore()
+        async let albums = fetchNames(db: db, collection: "famoria_albums", titleKey: "title")
+        async let journal = fetchNames(db: db, collection: "famoria_journal_entries", titleKey: "title")
+        async let recipes = fetchNames(db: db, collection: "famoria_recipes", titleKey: "title")
+        async let documents = fetchNames(db: db, collection: "famoria_documents", titleKey: "title")
+
+        let albumItems = (await albums).map { Mentionable(id: "album-\($0.0)", name: $0.1, kind: .album) }
+        let journalItems = (await journal).map { Mentionable(id: "journal-\($0.0)", name: $0.1, kind: .journal) }
+        let recipeItems = (await recipes).map { Mentionable(id: "recipe-\($0.0)", name: $0.1, kind: .recipe) }
+        let docItems = (await documents).map { Mentionable(id: "doc-\($0.0)", name: $0.1, kind: .document) }
+
+        await MainActor.run {
+            self.extraMentionables = albumItems + journalItems + recipeItems + docItems
+        }
+    }
+
+    private func fetchNames(db: Firestore, collection: String, titleKey: String) async -> [(String, String)] {
+        do {
+            let snap = try await db.collection(collection).limit(to: 20).getDocuments()
+            return snap.documents.compactMap { doc in
+                guard let title = doc.data()[titleKey] as? String, !title.isEmpty else { return nil }
+                return (doc.documentID, title)
+            }
+        } catch {
+            Log.appState.error("mentionables fetch failed for \(collection, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return []
         }
     }
 

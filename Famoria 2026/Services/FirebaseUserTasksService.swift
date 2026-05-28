@@ -35,6 +35,18 @@ public struct UserTaskDoc: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
+/// One event task assigned to the current user, surfaced on the home Tasks
+/// card alongside personal tasks. The eventId and familyId are decoded from
+/// the document's parent path so tapping can navigate to the event.
+public struct AssignedEventTask: Identifiable, Equatable, Hashable {
+    public let id: String
+    public let title: String
+    public let isDone: Bool
+    public let dueDate: Date?
+    public let eventId: String
+    public let familyId: String
+}
+
 /// Live, per-user view of the personal task list. Each instance is bound
 /// to a single userId; pass a new userId via `start(userId:)` when the
 /// signed-in user changes.
@@ -42,11 +54,15 @@ public struct UserTaskDoc: Identifiable, Codable, Equatable, Hashable {
 public final class UserTasksStore: ObservableObject {
 
     @Published public private(set) var tasks: [UserTaskDoc] = []
+    @Published public private(set) var assignedEventTasks: [AssignedEventTask] = []
     @Published public var errorMessage: String?
 
     private let db = Firestore.firestore()
     private var listener: ListenerRegistration?
+    private var assignedListener: ListenerRegistration?
     private var currentUserId: String?
+    private var currentFamilyId: String?
+    private var currentUserName: String?
 
     public init() {}
 
@@ -75,11 +91,64 @@ public final class UserTasksStore: ObservableObject {
             }
     }
 
+    /// Begin listening for event tasks where the signed-in user appears in
+    /// `assignedTo`. Uses a `tasks` collection-group query and filters
+    /// client-side by the family-scoped document path.
+    public func startAssignedEventTasks(familyId: String, userName: String) {
+        guard !userName.isEmpty else { return }
+        guard familyId != currentFamilyId || userName != currentUserName else { return }
+
+        assignedListener?.remove()
+        currentFamilyId = familyId
+        currentUserName = userName
+
+        let familyPrefix = "families/\(familyId)/eventPlanning/"
+        assignedListener = db.collectionGroup("tasks")
+            .whereField("assignedTo", arrayContains: userName)
+            .addSnapshotListener { [weak self] snapshot, error in
+                if let error {
+                    Log.tasks.error("assigned tasks listener failed: \(error.localizedDescription, privacy: .public)")
+                    return
+                }
+                guard let self, let snapshot else { return }
+                self.assignedEventTasks = snapshot.documents.compactMap { doc in
+                    let path = doc.reference.path
+                    guard path.hasPrefix(familyPrefix) else { return nil }
+                    let data = doc.data()
+                    let id = (data["id"] as? String) ?? doc.documentID
+                    let title = (data["taskName"] as? String) ?? "Task"
+                    let isDone = (data["isCompleted"] as? Bool) ?? false
+                    let dueDate: Date? = {
+                        if let ts = data["dueDate"] as? Timestamp { return ts.dateValue() }
+                        if let d = data["dueDate"] as? Date { return d }
+                        return nil
+                    }()
+                    // path format: families/{familyId}/eventPlanning/{eventId}/tasks/{taskId}
+                    let components = path.split(separator: "/")
+                    let eventIdx = components.firstIndex(of: "eventPlanning").map { $0 + 1 } ?? -1
+                    let eventId = (eventIdx >= 0 && eventIdx < components.count) ? String(components[eventIdx]) : ""
+                    return AssignedEventTask(
+                        id: id,
+                        title: title,
+                        isDone: isDone,
+                        dueDate: dueDate,
+                        eventId: eventId,
+                        familyId: familyId
+                    )
+                }
+            }
+    }
+
     public func stop() {
         listener?.remove()
         listener = nil
+        assignedListener?.remove()
+        assignedListener = nil
         currentUserId = nil
+        currentFamilyId = nil
+        currentUserName = nil
         tasks = []
+        assignedEventTasks = []
     }
 
     public func add(title: String) {
