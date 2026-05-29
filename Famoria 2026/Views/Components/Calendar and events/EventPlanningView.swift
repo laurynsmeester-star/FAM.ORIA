@@ -314,8 +314,7 @@ struct EventPlanningView: View {
                     withAnimation(.easeInOut(duration: 0.2)) { activeTab = tab }
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: tab.icon).font(.caption)
-                        Text(tab.title).font(.caption.weight(.semibold))
+                        Image(systemName: tab.icon).font(.body)
                         if let badge = badge(for: tab) {
                             Text(badge)
                                 .font(.system(size: 10, weight: .bold))
@@ -324,13 +323,14 @@ struct EventPlanningView: View {
                                 .foregroundColor(.primary)
                         }
                     }
-                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .padding(.horizontal, 10).padding(.vertical, 10)
                     .frame(maxWidth: .infinity)
                     .background(
                         RoundedRectangle(cornerRadius: 10)
                             .fill(activeTab == tab ? Color.accentColor.opacity(0.18) : Color(.secondarySystemBackground))
                     )
                     .foregroundColor(activeTab == tab ? .accentColor : .primary)
+                    .accessibilityLabel(tab.title)
                 }
                 .buttonStyle(.plain)
             }

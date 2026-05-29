@@ -23,13 +23,18 @@ public struct User: Identifiable, Equatable, Codable {
     public var familyId: String?
 
     public var role: MemberRole?
-    
-    public init(id: String, name: String, email: String, familyId: String?, role: MemberRole?) {
+
+    /// Cloud Storage download URL of the user's avatar image. Nil when the
+    /// user hasn't uploaded a photo yet (the UI falls back to initials).
+    public var avatarURL: String?
+
+    public init(id: String, name: String, email: String, familyId: String?, role: MemberRole?, avatarURL: String? = nil) {
         self.id = id
         self.name = name
         self.email = email
         self.familyId = familyId
         self.role = role
+        self.avatarURL = avatarURL
     }
 
     // Explicit CodingKeys to ensure stable Codable synthesis and avoid ambiguity
@@ -39,6 +44,7 @@ public struct User: Identifiable, Equatable, Codable {
         case email
         case familyId
         case role
+        case avatarURL
     }
 }
 
@@ -91,6 +97,10 @@ public struct FamilyEvent: Identifiable, Codable, Equatable {
     public var eventTypeRaw: String?
     /// Whether the event repeats yearly.
     public var isRecurring: Bool?
+    /// Raw values of `ReminderOffset` for any in-app alerts the user
+    /// scheduled when creating/editing this event. Persisted so all
+    /// family members keep the same alerts in sync.
+    public var reminderOffsetsRaw: [String]?
 
     public init(
         id: String,
@@ -103,7 +113,8 @@ public struct FamilyEvent: Identifiable, Codable, Equatable {
         location: String? = nil,
         notes: String? = nil,
         eventTypeRaw: String? = nil,
-        isRecurring: Bool? = nil
+        isRecurring: Bool? = nil,
+        reminderOffsetsRaw: [String]? = nil
     ) {
         self.id = id
         self.title = title
@@ -116,6 +127,7 @@ public struct FamilyEvent: Identifiable, Codable, Equatable {
         self.notes = notes
         self.eventTypeRaw = eventTypeRaw
         self.isRecurring = isRecurring
+        self.reminderOffsetsRaw = reminderOffsetsRaw
     }
 }
 

@@ -28,8 +28,14 @@ struct AddEventView: View {
     @State private var location: String = ""
     @State private var notes: String = ""
     @State private var isRecurring: Bool = false
+    @State private var selectedReminders: Set<ReminderOffset> = []
+    @State private var appleRemindersStatus: AppleRemindersStatus = .idle
 
     @State private var showValidationError: Bool = false
+
+    private enum AppleRemindersStatus: Equatable {
+        case idle, saving, saved, failed
+    }
 
     var body: some View {
         NavigationStack {
@@ -86,6 +92,38 @@ struct AddEventView: View {
                         .lineLimit(3...6)
                 }
 
+                Section {
+                    ForEach(ReminderOffset.allCases) { offset in
+                        Toggle(isOn: bindingForReminder(offset)) {
+                            Label(offset.displayName, systemImage: "bell.fill")
+                        }
+                    }
+                    Button {
+                        Task { await exportToAppleReminders() }
+                    } label: {
+                        HStack {
+                            Label("Add to Apple Reminders", systemImage: "list.bullet.rectangle.portrait")
+                            Spacer()
+                            switch appleRemindersStatus {
+                            case .idle: EmptyView()
+                            case .saving:
+                                ProgressView().controlSize(.small)
+                            case .saved:
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                            case .failed:
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                    }
+                    .disabled(appleRemindersStatus == .saving || title.trimmingCharacters(in: .whitespaces).isEmpty)
+                } header: {
+                    Text("Reminders & Alerts")
+                } footer: {
+                    Text("In-app alerts fire automatically at the times you pick. Apple Reminders syncs once when you tap the button.")
+                }
+
                 if showValidationError {
                     Section {
                         Label("Please add a title.", systemImage: "exclamationmark.triangle.fill")
@@ -121,21 +159,27 @@ struct AddEventView: View {
             location = e.location ?? ""
             notes = e.notes ?? ""
             isRecurring = e.isRecurring
+            selectedReminders = Set(e.reminderOffsets)
         } else {
             date = initialDate
             endDate = initialDate
         }
     }
 
-    private func save() {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            withAnimation { showValidationError = true }
-            return
-        }
+    private func bindingForReminder(_ offset: ReminderOffset) -> Binding<Bool> {
+        Binding(
+            get: { selectedReminders.contains(offset) },
+            set: { isOn in
+                if isOn { selectedReminders.insert(offset) }
+                else { selectedReminders.remove(offset) }
+            }
+        )
+    }
 
+    private func currentEventDraft() -> FamilyEventV2 {
         let creator = appState.currentUser?.name ?? ""
-        let new = FamilyEventV2(
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return FamilyEventV2(
             id: editing?.id ?? UUID().uuidString,
             title: trimmed,
             date: date,
@@ -146,16 +190,35 @@ struct AddEventView: View {
             notes: notes.isEmpty ? nil : notes,
             eventType: eventType,
             isRecurring: isRecurring,
-            createdBy: creator
+            createdBy: creator,
+            reminderOffsetsRaw: selectedReminders.map(\.rawValue)
         )
+    }
+
+    private func exportToAppleReminders() async {
+        appleRemindersStatus = .saving
+        let ok = await EventReminderScheduler.addToAppleReminders(currentEventDraft())
+        appleRemindersStatus = ok ? .saved : .failed
+    }
+
+    private func save() {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            withAnimation { showValidationError = true }
+            return
+        }
+
+        let new = currentEventDraft()
 
         let isNew = (editing == nil)
         appState.upsertEvent(new)
+        Task { await EventReminderScheduler.schedule(for: new) }
 
         // For a newly created event, persist to Firestore so other family members
         // see it on their devices, and write a notification so they're alerted.
         // V2 fields are now part of the Firestore document so the full event
         // syncs cross-device (location, time range, type, notes, recurring).
+        let reminderRaw = selectedReminders.map(\.rawValue)
         if isNew {
             Task {
                 do {
@@ -169,7 +232,8 @@ struct AddEventView: View {
                         location: location.isEmpty ? nil : location,
                         notes: notes.isEmpty ? nil : notes,
                         eventTypeRaw: eventType.rawValue,
-                        isRecurring: isRecurring
+                        isRecurring: isRecurring,
+                        reminderOffsetsRaw: reminderRaw
                     )
                 } catch {
                     Log.appState.error("Failed to persist event: \(error.localizedDescription, privacy: .public)")
@@ -190,7 +254,8 @@ struct AddEventView: View {
                         location: location.isEmpty ? nil : location,
                         notes: notes.isEmpty ? nil : notes,
                         eventTypeRaw: eventType.rawValue,
-                        isRecurring: isRecurring
+                        isRecurring: isRecurring,
+                        reminderOffsetsRaw: reminderRaw
                     )
                 } catch {
                     Log.appState.error("Failed to update event: \(error.localizedDescription, privacy: .public)")
@@ -220,7 +285,8 @@ extension AppState {
             location: event.location,
             notes: event.notes,
             eventTypeRaw: event.eventType.rawValue,
-            isRecurring: event.isRecurring
+            isRecurring: event.isRecurring,
+            reminderOffsetsRaw: event.reminderOffsetsRaw
         )
         if let idx = events.firstIndex(where: { $0.id == event.id }) {
             events[idx] = legacy

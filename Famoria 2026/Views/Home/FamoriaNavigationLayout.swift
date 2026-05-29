@@ -574,10 +574,12 @@ struct FamoriaLayoutView<Content: View>: View {
                 )
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                FamoriaMobileFooterNav(
-                    currentPage: $currentPage,
-                    unreadMessagesCount: appState.unreadMessagesCount
-                )
+                if currentPage != .profile {
+                    FamoriaMobileFooterNav(
+                        currentPage: $currentPage,
+                        unreadMessagesCount: appState.unreadMessagesCount
+                    )
+                }
             }
             .background(FamoriaTheme.backgroundGradient.ignoresSafeArea())
         .overlay {

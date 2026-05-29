@@ -127,10 +127,18 @@ private struct JournalEntriesTab: View {
                     return
                 }
                 guard let snapshot else { return }
-                entries = snapshot.documents.compactMap { doc in
+                let currentUserId = appState.currentUser?.id
+                entries = snapshot.documents.compactMap { doc -> FamilyJournalEntry? in
                     var data = doc.data()
                     data["id"] = doc.documentID
-                    return try? Firestore.Decoder().decode(FamilyJournalEntry.self, from: data)
+                    guard let entry = try? Firestore.Decoder().decode(FamilyJournalEntry.self, from: data) else {
+                        return nil
+                    }
+                    // Hide private entries from anyone other than the author.
+                    if entry.isPrivate, entry.authorId != currentUserId {
+                        return nil
+                    }
+                    return entry
                 }
             }
     }
@@ -215,10 +223,19 @@ private struct JournalEntriesTab: View {
         .onAppear { startListening() }
         .onDisappear { listener?.remove(); listener = nil }
         .sheet(isPresented: $showNewEntry) {
-            NewFamilyJournalEntrySheet(onSave: saveEntry, authorName: appState.currentUser?.name ?? "Unknown")
+            NewFamilyJournalEntrySheet(
+                onSave: saveEntry,
+                authorName: appState.currentUser?.name ?? "Unknown",
+                authorId: appState.currentUser?.id
+            )
         }
         .sheet(item: $editingEntry) { entry in
-            NewFamilyJournalEntrySheet(onSave: saveEntry, authorName: entry.authorName, editingEntry: entry)
+            NewFamilyJournalEntrySheet(
+                onSave: saveEntry,
+                authorName: entry.authorName,
+                authorId: entry.authorId ?? appState.currentUser?.id,
+                editingEntry: entry
+            )
         }
         .alert("Delete Entry", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) { deleteTargetId = nil }
@@ -239,8 +256,10 @@ struct FamilyJournalEntry: Identifiable, Codable, Equatable, Hashable {
     var title: String
     var body: String
     var authorName: String
+    var authorId: String?
     var mood: String
     var createdDate: Date
+    var isPrivate: Bool = false
 }
 
 private struct FamilyJournalEntryCard: View {
@@ -250,14 +269,25 @@ private struct FamilyJournalEntryCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(alignment: .firstTextBaseline) {
                 Text(entry.mood)
-                    .font(.system(size: 32))
-                    .frame(width: 48, height: 48)
-                    .background(Color.purple.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.purple)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.purple.opacity(0.12))
+                    .clipShape(Capsule())
+
                 Text(entry.title)
                     .font(.headline)
+                    .lineLimit(1)
+
+                if entry.isPrivate {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundColor(.purple)
+                }
+
                 Spacer()
                 Text(entry.createdDate.formatted(date: .abbreviated, time: .omitted))
                     .font(.caption2).foregroundColor(.secondary)
@@ -299,16 +329,20 @@ private struct NewFamilyJournalEntrySheet: View {
     @Environment(\.dismiss) private var dismiss
     var onSave: (FamilyJournalEntry) -> Void
     let authorName: String
+    let authorId: String?
     var editingEntry: FamilyJournalEntry? = nil
 
     @State private var title = ""
     @State private var bodyText = ""
-    @State private var selectedMood = "\u{1F4DD}"
+    @State private var selectedMood = "Note"
+    @State private var isPrivate = false
 
-    private let moods: [(emoji: String, label: String)] = [
-        ("\u{1F4DD}", "Note"), ("\u{1F60A}", "Happy"), ("\u{1F389}", "Celebrate"),
-        ("\u{2764}\u{FE0F}", "Love"), ("\u{1F31F}", "Inspired"), ("\u{1F3E0}", "Home"),
-        ("\u{1F382}", "Birthday"), ("\u{2708}\u{FE0F}", "Travel"), ("\u{1F64F}", "Grateful"), ("\u{1F622}", "Sad")
+    /// Each tag stores its label as both the user-facing text and the
+    /// persisted value, so old entries that still use emoji keys can be
+    /// migrated by the existing `entry.mood` field with no extra column.
+    private let moods: [String] = [
+        "Note", "Happy", "Celebrate", "Love", "Inspired",
+        "Home", "Birthday", "Travel", "Grateful", "Sad"
     ]
 
     var body: some View {
@@ -316,27 +350,24 @@ private struct NewFamilyJournalEntrySheet: View {
             Form {
                 Section("How are you feeling?") {
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 14) {
-                            ForEach(moods, id: \.emoji) { mood in
+                        HStack(spacing: 10) {
+                            ForEach(moods, id: \.self) { mood in
                                 Button {
-                                    selectedMood = mood.emoji
+                                    selectedMood = mood
                                 } label: {
-                                    VStack(spacing: 4) {
-                                        Text(mood.emoji)
-                                            .font(.system(size: 38))
-                                        Text(mood.label)
-                                            .font(.caption)
-                                            .foregroundColor(selectedMood == mood.emoji ? .purple : .secondary)
-                                    }
-                                    .padding(8)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .fill(selectedMood == mood.emoji ? Color.purple.opacity(0.15) : Color.clear)
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .stroke(selectedMood == mood.emoji ? Color.purple : Color.clear, lineWidth: 1.5)
-                                    )
+                                    Text(mood)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundColor(selectedMood == mood ? .purple : .primary)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 14)
+                                                .fill(selectedMood == mood ? Color.purple.opacity(0.15) : Color(.secondarySystemBackground))
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 14)
+                                                .stroke(selectedMood == mood ? Color.purple : Color.clear, lineWidth: 1.5)
+                                        )
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -348,6 +379,23 @@ private struct NewFamilyJournalEntrySheet: View {
                     TextField("Title", text: $title)
                     TextField("Write your thoughts...", text: $bodyText, axis: .vertical)
                         .lineLimit(5...12)
+                }
+                Section {
+                    Toggle(isOn: $isPrivate) {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(isPrivate ? "Private entry" : "Shared with family")
+                                Text(isPrivate
+                                     ? "Only you can see this entry."
+                                     : "Visible to everyone in your family.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: isPrivate ? "lock.fill" : "person.2.fill")
+                                .foregroundColor(isPrivate ? .purple : .blue)
+                        }
+                    }
                 }
             }
             .navigationTitle(editingEntry != nil ? "Edit Entry" : "New Journal Entry")
@@ -363,8 +411,10 @@ private struct NewFamilyJournalEntrySheet: View {
                             title: title,
                             body: bodyText,
                             authorName: editingEntry?.authorName ?? authorName,
+                            authorId: editingEntry?.authorId ?? authorId,
                             mood: selectedMood,
-                            createdDate: editingEntry?.createdDate ?? Date()
+                            createdDate: editingEntry?.createdDate ?? Date(),
+                            isPrivate: isPrivate
                         )
                         onSave(entry)
                         dismiss()
@@ -377,6 +427,7 @@ private struct NewFamilyJournalEntrySheet: View {
                     title = e.title
                     bodyText = e.body
                     selectedMood = e.mood
+                    isPrivate = e.isPrivate
                 }
             }
         }

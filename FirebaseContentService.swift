@@ -227,7 +227,8 @@ final class FirebaseContentService {
         location: String? = nil,
         notes: String? = nil,
         eventTypeRaw: String? = nil,
-        isRecurring: Bool? = nil
+        isRecurring: Bool? = nil,
+        reminderOffsetsRaw: [String]? = nil
     ) async throws -> FamilyEvent {
         let eventId = id ?? UUID().uuidString
 
@@ -242,7 +243,8 @@ final class FirebaseContentService {
             location: location,
             notes: notes,
             eventTypeRaw: eventTypeRaw,
-            isRecurring: isRecurring
+            isRecurring: isRecurring,
+            reminderOffsetsRaw: reminderOffsetsRaw
         )
 
         var eventData: [String: Any] = [
@@ -259,6 +261,7 @@ final class FirebaseContentService {
         if let notes, !notes.isEmpty { eventData["notes"] = notes }
         if let eventTypeRaw { eventData["eventType"] = eventTypeRaw }
         if let isRecurring { eventData["isRecurring"] = isRecurring }
+        if let reminderOffsetsRaw { eventData["reminderOffsets"] = reminderOffsetsRaw }
 
         try await eventsRef(familyId: familyId).document(eventId).setData(eventData)
 
@@ -281,6 +284,7 @@ final class FirebaseContentService {
         let notes = data["notes"] as? String
         let eventTypeRaw = data["eventType"] as? String
         let isRecurring = data["isRecurring"] as? Bool
+        let reminderOffsetsRaw = data["reminderOffsets"] as? [String]
         return FamilyEvent(
             id: id,
             title: title,
@@ -292,7 +296,8 @@ final class FirebaseContentService {
             location: location,
             notes: notes,
             eventTypeRaw: eventTypeRaw,
-            isRecurring: isRecurring
+            isRecurring: isRecurring,
+            reminderOffsetsRaw: reminderOffsetsRaw
         )
     }
 
@@ -326,7 +331,8 @@ final class FirebaseContentService {
         location: String? = nil,
         notes: String? = nil,
         eventTypeRaw: String? = nil,
-        isRecurring: Bool? = nil
+        isRecurring: Bool? = nil,
+        reminderOffsetsRaw: [String]? = nil
     ) async throws {
         var updates: [String: Any] = [:]
         if let title { updates["title"] = title }
@@ -338,6 +344,7 @@ final class FirebaseContentService {
         if let notes { updates["notes"] = notes }
         if let eventTypeRaw { updates["eventType"] = eventTypeRaw }
         if let isRecurring { updates["isRecurring"] = isRecurring }
+        if let reminderOffsetsRaw { updates["reminderOffsets"] = reminderOffsetsRaw }
 
         if !updates.isEmpty {
             updates["editedAt"] = FieldValue.serverTimestamp()

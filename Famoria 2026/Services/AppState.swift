@@ -448,7 +448,8 @@ final class AppState: ObservableObject {
         location: String? = nil,
         notes: String? = nil,
         eventTypeRaw: String? = nil,
-        isRecurring: Bool? = nil
+        isRecurring: Bool? = nil,
+        reminderOffsetsRaw: [String]? = nil
     ) async throws {
         guard let family = currentFamily,
               let user = currentUser else {
@@ -467,7 +468,8 @@ final class AppState: ObservableObject {
             location: location,
             notes: notes,
             eventTypeRaw: eventTypeRaw,
-            isRecurring: isRecurring
+            isRecurring: isRecurring,
+            reminderOffsetsRaw: reminderOffsetsRaw
         )
 
         // Avoid duplicating an event that the caller already inserted locally.
@@ -499,7 +501,8 @@ final class AppState: ObservableObject {
         location: String? = nil,
         notes: String? = nil,
         eventTypeRaw: String? = nil,
-        isRecurring: Bool? = nil
+        isRecurring: Bool? = nil,
+        reminderOffsetsRaw: [String]? = nil
     ) async throws {
         try await contentService.updateEvent(
             familyId: familyId,
@@ -512,7 +515,8 @@ final class AppState: ObservableObject {
             location: location,
             notes: notes,
             eventTypeRaw: eventTypeRaw,
-            isRecurring: isRecurring
+            isRecurring: isRecurring,
+            reminderOffsetsRaw: reminderOffsetsRaw
         )
     }
 
@@ -545,6 +549,22 @@ final class AppState: ObservableObject {
         try await contentService.addReply(familyId: family.id, postId: post.id, reply: reply)
         if let idx = self.posts.firstIndex(where: { $0.id == post.id }) {
             self.posts[idx].replies.append(reply)
+        }
+    }
+
+    /// Uploads the user's avatar photo and updates the URL on both the
+    /// `users` document and the family members list.
+    func updateUserAvatar(jpegData: Data) async throws {
+        guard let user = currentUser,
+              let authService = auth as? FirebaseAuthService else { return }
+        let url = try await authService.uploadAvatar(
+            userId: user.id,
+            familyId: user.familyId,
+            jpegData: jpegData
+        )
+        self.currentUser?.avatarURL = url
+        if let idx = currentFamily?.members.firstIndex(where: { $0.id == user.id }) {
+            currentFamily?.members[idx].avatarURL = url
         }
     }
 
@@ -583,11 +603,12 @@ final class AppState: ObservableObject {
         guard let family = currentFamily else {
             throw AppStateError.noFamily
         }
-        
+
         try await contentService.deleteEvent(familyId: family.id, eventId: event.id)
-        
+
         // Remove optimistically
         self.events.removeAll { $0.id == event.id }
+        EventReminderScheduler.cancelAll(eventId: event.id)
     }
     
     // MARK: - Chat Management

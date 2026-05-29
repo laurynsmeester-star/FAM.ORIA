@@ -2,6 +2,7 @@ import Foundation
 import FirebaseCore
 import FirebaseAuth
 import FirebaseFirestore
+import FirebaseStorage
 
 final class FirebaseAuthService: AuthService {
     private let db = Firestore.firestore()
@@ -92,6 +93,31 @@ final class FirebaseAuthService: AuthService {
                 .document(userId)
                 .setData(["name": trimmed], merge: true)
         }
+    }
+
+    /// Uploads `jpegData` to `avatars/{userId}/avatar.jpg`, then writes the
+    /// download URL to the `users/{userId}` and `families/{familyId}/members/{userId}`
+    /// docs so every family member sees the new photo.
+    func uploadAvatar(userId: String, familyId: String?, jpegData: Data) async throws -> String {
+        let ref = Storage.storage().reference()
+            .child("avatars/\(userId)/avatar.jpg")
+        let metadata = StorageMetadata()
+        metadata.contentType = "image/jpeg"
+
+        _ = try await ref.putDataAsync(jpegData, metadata: metadata)
+        let url = try await ref.downloadURL().absoluteString
+
+        try await db.collection("users").document(userId).setData([
+            "avatarURL": url
+        ], merge: true)
+        if let familyId {
+            try await db.collection("families")
+                .document(familyId)
+                .collection("members")
+                .document(userId)
+                .setData(["avatarURL": url], merge: true)
+        }
+        return url
     }
 
     /// Restore the currently signed-in Firebase Auth user (session persists across launches).

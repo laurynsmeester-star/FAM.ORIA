@@ -196,28 +196,30 @@ struct AlbumCardView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Cover image
             ZStack(alignment: .topLeading) {
-                Group {
-                    if let url = album.coverImageURL.flatMap(URL.init) {
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .success(let img):
-                                img.resizable().scaledToFill()
-                            case .failure:
-                                placeholderCover
-                            default:
-                                Color(UIColor.systemFill)
+                GeometryReader { geo in
+                    Group {
+                        if let url = album.coverImageURL.flatMap(URL.init) {
+                            AsyncImage(url: url) { phase in
+                                switch phase {
+                                case .success(let img):
+                                    img.resizable().scaledToFill()
+                                case .failure:
+                                    placeholderCover
+                                default:
+                                    Color(UIColor.systemFill)
+                                }
                             }
+                        } else {
+                            placeholderCover
                         }
-                    } else {
-                        placeholderCover
                     }
+                    .frame(width: geo.size.width, height: geo.size.width)
+                    .clipped()
                 }
-                .frame(maxWidth: .infinity)
-                .aspectRatio(1, contentMode: .fill)
-                .clipped()
+                .aspectRatio(1, contentMode: .fit)
 
-                // Category badge
-                Text("\(album.category.emoji) \(album.category.displayName)")
+                // Category badge — word only, no emoji.
+                Text(album.category.displayName)
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(album.category.badgeForeground)
                     .padding(.horizontal, 8)

@@ -9,6 +9,7 @@
 import SwiftUI
 import EventKit
 import os
+import PhotosUI
 
 /// The main home page view shown after successful authentication
 struct HomePageView: View {
@@ -955,6 +956,8 @@ struct ProfileTab: View {
     @State private var isSendingTestNotification = false
     @State private var testNotificationResult: String?
     @State private var showTestNotificationResult = false
+    @State private var avatarPickerItem: PhotosPickerItem?
+    @State private var isUploadingAvatar = false
 
     private enum ProfileSheet: String, Identifiable {
         case notifications, security, help, share
@@ -972,6 +975,7 @@ struct ProfileTab: View {
             ScrollView {
                 VStack(spacing: 20) {
                     profileHeader
+                        .padding(.top, 16)
                     if let family = family { familyCard(family) }
                     settingsSection
                     preferencesSection
@@ -983,6 +987,9 @@ struct ProfileTab: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationBarHidden(true)
+            .onChange(of: avatarPickerItem) { _, newItem in
+                Task { await handleAvatarSelection(newItem) }
+            }
             .alert("Sign Out", isPresented: $showSignOutAlert) {
                 Button("Cancel", role: .cancel) { }
                 Button("Sign Out", role: .destructive) {
@@ -1030,20 +1037,59 @@ struct ProfileTab: View {
 
     private var profileHeader: some View {
         VStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.purple.opacity(0.3), Color.pink.opacity(0.3)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 90, height: 90)
-                Text(initials(for: user?.name ?? ""))
-                    .font(.title).fontWeight(.bold)
-                    .foregroundColor(.purple)
+            PhotosPicker(selection: $avatarPickerItem, matching: .images) {
+                ZStack(alignment: .bottomTrailing) {
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.purple.opacity(0.3), Color.pink.opacity(0.3)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 90, height: 90)
+
+                        if let urlString = user?.avatarURL,
+                           let url = URL(string: urlString) {
+                            AsyncImage(url: url) { phase in
+                                switch phase {
+                                case .success(let img):
+                                    img.resizable().scaledToFill()
+                                default:
+                                    Text(initials(for: user?.name ?? ""))
+                                        .font(.title).fontWeight(.bold)
+                                        .foregroundColor(.purple)
+                                }
+                            }
+                            .frame(width: 90, height: 90)
+                            .clipShape(Circle())
+                        } else {
+                            Text(initials(for: user?.name ?? ""))
+                                .font(.title).fontWeight(.bold)
+                                .foregroundColor(.purple)
+                        }
+
+                        if isUploadingAvatar {
+                            Circle()
+                                .fill(Color.black.opacity(0.4))
+                                .frame(width: 90, height: 90)
+                            ProgressView()
+                                .tint(.white)
+                        }
+                    }
+
+                    Image(systemName: "camera.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Color.purple)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                }
             }
+            .buttonStyle(.plain)
+            .disabled(isUploadingAvatar)
             VStack(spacing: 4) {
                 Text(user?.name ?? "User")
                     .font(.title2).fontWeight(.bold)
@@ -1090,6 +1136,38 @@ struct ProfileTab: View {
         .background(Color(.systemBackground))
         .cornerRadius(16)
         .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
+    }
+
+    private func handleAvatarSelection(_ item: PhotosPickerItem?) async {
+        guard let item else { return }
+        isUploadingAvatar = true
+        defer { isUploadingAvatar = false }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else { return }
+            let jpegData = compressForAvatar(data)
+            try await appState.updateUserAvatar(jpegData: jpegData)
+        } catch {
+            Log.appState.error("updateUserAvatar failed: \(error.localizedDescription, privacy: .public)")
+        }
+        avatarPickerItem = nil
+    }
+
+    /// Re-encodes the picker's selected image into a reasonably-sized JPEG
+    /// so we don't push multi-megabyte avatars to Storage.
+    private func compressForAvatar(_ data: Data) -> Data {
+        guard let image = UIImage(data: data) else { return data }
+        let maxDimension: CGFloat = 512
+        let size = image.size
+        let scale = min(maxDimension / max(size.width, size.height), 1)
+        if scale == 1 {
+            return image.jpegData(compressionQuality: 0.8) ?? data
+        }
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
+        return resized.jpegData(compressionQuality: 0.8) ?? data
     }
 
     private func familyCard(_ family: Family) -> some View {

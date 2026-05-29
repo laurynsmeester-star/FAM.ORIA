@@ -77,6 +77,13 @@ public struct FamilyEventV2: Identifiable, Codable, Equatable, Hashable {
     public var eventType: EventType
     public var isRecurring: Bool
     public var createdBy: String
+    /// Reminder offsets (raw values of `ReminderOffset`) the user chose for
+    /// this event. Local notifications are scheduled at each of these.
+    public var reminderOffsetsRaw: [String]
+
+    public var reminderOffsets: [ReminderOffset] {
+        reminderOffsetsRaw.compactMap { ReminderOffset(rawValue: $0) }
+    }
 
     public init(
         id: String = UUID().uuidString,
@@ -89,7 +96,8 @@ public struct FamilyEventV2: Identifiable, Codable, Equatable, Hashable {
         notes: String? = nil,
         eventType: EventType = .other,
         isRecurring: Bool = false,
-        createdBy: String
+        createdBy: String,
+        reminderOffsetsRaw: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -102,6 +110,7 @@ public struct FamilyEventV2: Identifiable, Codable, Equatable, Hashable {
         self.eventType = eventType
         self.isRecurring = isRecurring
         self.createdBy = createdBy
+        self.reminderOffsetsRaw = reminderOffsetsRaw
     }
 
     /// For recurring events, returns the next upcoming occurrence
