@@ -98,13 +98,15 @@ final class FirebaseContentService {
         }
         let reactionsRaw = data["reactions"] as? [[String: Any]] ?? []
         let repliesRaw = data["replies"] as? [[String: Any]] ?? []
+        let activityKind = data["activityKind"] as? String
         return FamilyPost(
             id: id,
             authorName: authorName,
             content: content,
             timestamp: timestamp.dateValue(),
             reactions: decodeReactions(reactionsRaw),
-            replies: decodeReplies(repliesRaw)
+            replies: decodeReplies(repliesRaw),
+            activityKind: activityKind
         )
     }
     

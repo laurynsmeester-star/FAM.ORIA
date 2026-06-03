@@ -17,6 +17,7 @@ struct AlbumDetailView: View {
 
     let album: FamoriaAlbum
     @ObservedObject var store: AlbumStoreManager
+    @EnvironmentObject var appState: AppState
 
     // Local copies for editing
     @State private var currentAlbum: FamoriaAlbum
@@ -350,6 +351,17 @@ struct AlbumDetailView: View {
                         dateTaken: dateTakenDraft
                     )
                     try await store.addPhoto(photo)
+                    if let familyId = appState.currentFamily?.id,
+                       let user = appState.currentUser {
+                        await appState.activityService.log(
+                            familyId: familyId,
+                            kind: .photoAdded,
+                            actorName: user.name,
+                            actorId: user.id,
+                            title: "Added a photo to \(currentAlbum.title)",
+                            body: captionDraft.isEmpty ? "Tap to view." : captionDraft
+                        )
+                    }
                 } catch {
                     if firstError == nil { firstError = error.localizedDescription }
                 }

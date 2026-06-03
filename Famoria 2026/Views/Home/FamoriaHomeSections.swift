@@ -126,16 +126,12 @@ private struct MemberAvatar: View {
     let member: User
 
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(HomeSectionTheme.avatarPlaceholder)
-                .frame(width: 64, height: 64)
-
-            // Placeholder for AsyncImage(url: member.photoURL) when available
-            Text(getInitials(for: member.name))
-                .font(.title3).fontWeight(.bold)
-                .foregroundColor(HomeSectionTheme.slateText)
-        }
+        AvatarView(
+            name: member.name,
+            imageURL: member.avatarURL,
+            size: 64,
+            tint: HomeSectionTheme.slateText
+        )
     }
 }
 
@@ -381,11 +377,11 @@ private struct UpcomingEventRow: View {
         HStack(spacing: 16) {
             // Date badge (mirrors the amber→rose gradient min-w-[60px] block)
             VStack(spacing: 2) {
-                Text(event.date.formatted(.dateTime.day()))
+                Text(event.upcomingDate.formatted(.dateTime.day()))
                     .font(.title).fontWeight(.bold)
                     .foregroundColor(HomeSectionTheme.rose)
 
-                Text(event.date.formatted(.dateTime.month(.abbreviated)).uppercased())
+                Text(event.upcomingDate.formatted(.dateTime.month(.abbreviated)).uppercased())
                     .font(.caption2).fontWeight(.medium)
                     .foregroundColor(.secondary)
             }
@@ -425,7 +421,7 @@ struct CelebrationCountdown: View {
 
     private var daysUntil: Int? {
         guard let event = nextEvent else { return nil }
-        return Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()), to: Calendar.current.startOfDay(for: event.date)).day
+        return Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()), to: Calendar.current.startOfDay(for: event.upcomingDate)).day
     }
 
     var body: some View {
@@ -563,6 +559,11 @@ struct UserTasksCard: View {
     @State private var newTaskText = ""
     @State private var showAddField = false
 
+    /// Called when the user taps an event-assigned task. EnhancedHomeTab
+    /// uses this to set `appState.pendingEventDate` and switch to the
+    /// events tab.
+    var onOpenEvent: (AssignedEventTask) -> Void = { _ in }
+
     /// Combined list: personal tasks first, then event tasks the user is
     /// assigned to. Limited to a few rows because the card sits in a side-
     /// by-side column on the home page.
@@ -613,15 +614,30 @@ struct UserTasksCard: View {
 
             ForEach(store.assignedEventTasks.prefix(max(0, 4 - store.tasks.count)), id: \.id) { task in
                 HStack(spacing: 8) {
-                    Image(systemName: task.isDone ? "checkmark.circle.fill" : "calendar.circle")
-                        .font(.subheadline)
-                        .foregroundColor(task.isDone ? .green : .blue)
+                    Button {
+                        store.toggleAssignedEventTask(task)
+                    } label: {
+                        Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
+                            .font(.subheadline)
+                            .foregroundColor(task.isDone ? .green : .blue)
+                    }
+                    .buttonStyle(.plain)
 
-                    Text(task.title)
-                        .font(.caption)
-                        .strikethrough(task.isDone)
-                        .foregroundColor(task.isDone ? .secondary : .primary)
-                        .lineLimit(1)
+                    Button {
+                        onOpenEvent(task)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "calendar")
+                                .font(.caption2)
+                                .foregroundColor(.blue)
+                            Text(task.title)
+                                .font(.caption)
+                                .strikethrough(task.isDone)
+                                .foregroundColor(task.isDone ? .secondary : .primary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
             }
 

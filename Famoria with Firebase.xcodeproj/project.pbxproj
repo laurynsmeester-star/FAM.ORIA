@@ -346,6 +346,9 @@
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Famoria needs access to your calendar to display and sync family events.";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Famoria adds family events to your calendar.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Famoria uses your contacts to invite family members";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Famoria lets you pick a profile photo and add photos to family albums.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Famoria adds family events to your Reminders so you don't miss them. ";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Famoria adds family events to your Reminders so you don't miss them.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -391,6 +394,9 @@
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Famoria needs access to your calendar to display and sync family events.";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Famoria adds family events to your calendar.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Famoria uses your contacts to invite family members";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Famoria lets you pick a profile photo and add photos to family albums.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Famoria adds family events to your Reminders so you don't miss them. ";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Famoria adds family events to your Reminders so you don't miss them.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

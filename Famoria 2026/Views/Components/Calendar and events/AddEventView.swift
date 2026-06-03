@@ -68,7 +68,10 @@ struct AddEventView: View {
                                    in: date..., displayedComponents: .date)
                     }
 
-                    Toggle("Set time", isOn: $hasTimeRange.animation())
+                    Toggle("All day", isOn: Binding(
+                        get: { !hasTimeRange },
+                        set: { hasTimeRange = !$0 }
+                    ).animation())
                     if hasTimeRange {
                         DatePicker("Start time", selection: $startTime, displayedComponents: .hourAndMinute)
                         DatePicker("End time",   selection: $endTime,   displayedComponents: .hourAndMinute)

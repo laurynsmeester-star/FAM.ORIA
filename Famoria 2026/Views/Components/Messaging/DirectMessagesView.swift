@@ -297,14 +297,12 @@ struct NewChatView: View {
                             startChat(with: member)
                         } label: {
                             HStack(spacing: 12) {
-                                Circle()
-                                    .fill(Color.blue.opacity(0.15))
-                                    .frame(width: 44, height: 44)
-                                    .overlay(
-                                        Text(String(member.name.prefix(1)).uppercased())
-                                            .font(.headline)
-                                            .foregroundColor(.blue)
-                                    )
+                                AvatarView(
+                                    name: member.name,
+                                    imageURL: member.avatarURL,
+                                    size: 44,
+                                    tint: .blue
+                                )
 
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(member.name)
@@ -381,14 +379,12 @@ struct NewGroupChatView: View {
                             toggleMember(member.id)
                         } label: {
                             HStack {
-                                Circle()
-                                    .fill(Color.blue.opacity(0.15))
-                                    .frame(width: 36, height: 36)
-                                    .overlay(
-                                        Text(String(member.name.prefix(1)).uppercased())
-                                            .font(.subheadline)
-                                            .foregroundColor(.blue)
-                                    )
+                                AvatarView(
+                                    name: member.name,
+                                    imageURL: member.avatarURL,
+                                    size: 36,
+                                    tint: .blue
+                                )
 
                                 Text(member.name)
                                     .foregroundColor(.primary)

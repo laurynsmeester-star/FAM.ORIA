@@ -16,6 +16,7 @@ import PhotosUI
 struct AlbumFormView: View {
 
     @ObservedObject var store: AlbumStoreManager
+    @EnvironmentObject var appState: AppState
     var existingAlbum: FamoriaAlbum?
     /// Called with the saved album on successful update (edit mode only)
     var onSaved: ((FamoriaAlbum) -> Void)?
@@ -323,6 +324,17 @@ struct AlbumFormView: View {
                     onSaved?(album)
                 } else {
                     try await store.createAlbum(album)
+                    if let familyId = appState.currentFamily?.id,
+                       let user = appState.currentUser {
+                        await appState.activityService.log(
+                            familyId: familyId,
+                            kind: .albumCreated,
+                            actorName: user.name,
+                            actorId: user.id,
+                            title: "Created album: \(album.title)",
+                            body: album.category.displayName
+                        )
+                    }
                 }
                 await MainActor.run { dismiss() }
             } catch {

@@ -332,6 +332,11 @@ struct ChatDetailView: View {
 
                 if !msg.content.isEmpty && msg.messageType != .image {
                     styledMessageContent(msg.content, isSelf: isSelf)
+
+                    if let url = LinkExtractor.firstURL(in: msg.content) {
+                        LinkPreviewView(url: url)
+                            .frame(maxWidth: 260)
+                    }
                 }
 
                 if !msg.reactions.isEmpty {
@@ -411,22 +416,12 @@ struct ChatDetailView: View {
     }
 
     private func avatarCircle(for msg: ChatMessage) -> some View {
-        let initials = msg.senderName.split(separator: " ")
-            .compactMap { $0.first }
-            .prefix(2)
-            .map(String.init)
-            .joined()
-            .uppercased()
-
-        return Circle()
-            .fill(Color.blue.opacity(0.15))
-            .frame(width: 30, height: 30)
-            .overlay(
-                Text(initials)
-                    .font(.system(size: 11))
-                    .fontWeight(.semibold)
-                    .foregroundColor(.blue)
-            )
+        AvatarView(
+            name: msg.senderName,
+            imageURL: appState.avatarURL(forName: msg.senderName),
+            size: 30,
+            tint: .blue
+        )
     }
 
     // MARK: - Reactions

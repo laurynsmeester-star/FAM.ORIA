@@ -186,6 +186,26 @@ public final class UserTasksStore: ObservableObject {
         }
     }
 
+    /// Toggles the `isCompleted` flag on an event-planning task that's
+    /// assigned to the signed-in user. Writes back to the nested
+    /// `families/{familyId}/eventPlanning/{eventId}/tasks/{taskId}` doc.
+    public func toggleAssignedEventTask(_ task: AssignedEventTask) {
+        let newValue = !task.isDone
+        db.collection("families")
+            .document(task.familyId)
+            .collection("eventPlanning")
+            .document(task.eventId)
+            .collection("tasks")
+            .document(task.id)
+            .updateData(["isCompleted": newValue]) { [weak self] err in
+                if let err {
+                    Log.tasks.error("toggle assigned task failed: \(err.localizedDescription, privacy: .public)")
+                    let message = err.localizedDescription
+                    Task { @MainActor [weak self] in self?.errorMessage = message }
+                }
+            }
+    }
+
     private func collection(for userId: String) -> CollectionReference {
         db.collection("famoria_user_tasks").document(userId).collection("tasks")
     }

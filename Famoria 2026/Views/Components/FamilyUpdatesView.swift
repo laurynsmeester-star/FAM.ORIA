@@ -40,6 +40,10 @@ struct FamilyUpdatesView: View {
     @State private var showMentionPicker = false
     @State private var extraMentionables: [Mentionable] = []
 
+    /// Called when the user taps a mention link. The wrapper page sets
+    /// `currentPage` accordingly.
+    var onNavigate: (FamoriaPage) -> Void = { _ in }
+
     private var familyMembers: [User] {
         appState.currentFamily?.members ?? []
     }
@@ -111,6 +115,8 @@ struct FamilyUpdatesView: View {
                                 post: post,
                                 currentUserName: appState.currentUser?.name ?? "",
                                 familyMembers: familyMembers,
+                                mentionables: mentionables,
+                                onMentionTapped: handleMentionTap,
                                 onEdit: { newContent in
                                     Task { await editPost(post, newContent: newContent) }
                                 },
@@ -139,6 +145,26 @@ struct FamilyUpdatesView: View {
 
     private var sortedPosts: [FamilyPost] {
         appState.posts.sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private func handleMentionTap(_ item: Mentionable) {
+        switch item.kind {
+        case .member:
+            onNavigate(.familyTree)
+        case .event:
+            if let event = appState.events.first(where: { "event-\($0.id)" == item.id }) {
+                appState.pendingEventDate = event.date
+            }
+            onNavigate(.events)
+        case .album:
+            onNavigate(.albums)
+        case .journal:
+            onNavigate(.journal)
+        case .recipe:
+            onNavigate(.recipes)
+        case .document:
+            onNavigate(.documents)
+        }
     }
 
     private func deletePost(_ post: FamilyPost) async {
@@ -269,6 +295,8 @@ private struct UpdateCard: View {
     let post: FamilyPost
     let currentUserName: String
     let familyMembers: [User]
+    var mentionables: [Mentionable] = []
+    var onMentionTapped: (Mentionable) -> Void = { _ in }
     var onEdit: (String) -> Void = { _ in }
     var onDelete: () -> Void = {}
     var onReply: (String) -> Void = { _ in }
@@ -276,6 +304,7 @@ private struct UpdateCard: View {
 
     @State private var showReplyField = false
     @State private var replyText = ""
+    @State private var showReplyMentionPicker = false
     @State private var isEditing = false
     @State private var editText = ""
     @State private var showDeleteConfirm = false
@@ -287,14 +316,20 @@ private struct UpdateCard: View {
         VStack(alignment: .leading, spacing: 10) {
             // Header
             HStack(spacing: 10) {
-                Circle()
-                    .fill(Color.purple.opacity(0.2))
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Text(initials(for: post.authorName))
-                            .font(.caption).fontWeight(.bold)
-                            .foregroundColor(.purple)
+                if let kind = activityKind {
+                    ZStack {
+                        Circle().fill(kind.color.opacity(0.18))
+                            .frame(width: 40, height: 40)
+                        Image(systemName: kind.icon)
+                            .foregroundColor(kind.color)
+                    }
+                } else {
+                    AvatarView(
+                        name: post.authorName,
+                        imageURL: avatarURL(for: post.authorName),
+                        size: 40
                     )
+                }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(post.authorName)
@@ -350,6 +385,11 @@ private struct UpdateCard: View {
                 }
             } else {
                 highlightedContent(post.content)
+
+                // External link preview (first URL in the post)
+                if let url = LinkExtractor.firstURL(in: post.content) {
+                    LinkPreviewView(url: url)
+                }
             }
 
             // Reactions row
@@ -426,14 +466,12 @@ private struct UpdateCard: View {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(post.replies) { reply in
                         HStack(alignment: .top, spacing: 8) {
-                            Circle()
-                                .fill(Color.blue.opacity(0.15))
-                                .frame(width: 28, height: 28)
-                                .overlay(
-                                    Text(String(reply.authorName.prefix(1)).uppercased())
-                                        .font(.caption2.weight(.bold))
-                                        .foregroundColor(.blue)
-                                )
+                            AvatarView(
+                                name: reply.authorName,
+                                imageURL: avatarURL(for: reply.authorName),
+                                size: 28,
+                                tint: .blue
+                            )
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack {
                                     Text(reply.authorName)
@@ -452,28 +490,66 @@ private struct UpdateCard: View {
 
             // Reply field
             if showReplyField {
-                HStack(spacing: 8) {
-                    TextField("Write a reply...", text: $replyText)
-                        .font(.caption)
-                        .padding(8)
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(8)
-                    Button {
-                        let trimmed = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !trimmed.isEmpty else { return }
-                        onReply(trimmed)
-                        replyText = ""
-                    } label: {
-                        Image(systemName: "paperplane.fill")
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        TextField("Write a reply...", text: $replyText)
                             .font(.caption)
-                            .foregroundColor(.white)
-                            .frame(width: 30, height: 30)
-                            .background(replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.gray : Color.purple)
-                            .clipShape(Circle())
+                            .padding(8)
+                            .background(Color(.secondarySystemBackground))
+                            .cornerRadius(8)
+                            .onChange(of: replyText) { _, value in
+                                showReplyMentionPicker = value.last == "@"
+                            }
+                        Button {
+                            let trimmed = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !trimmed.isEmpty else { return }
+                            onReply(trimmed)
+                            replyText = ""
+                            showReplyMentionPicker = false
+                            return
+                        } label: {
+                            Image(systemName: "paperplane.fill")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                                .frame(width: 30, height: 30)
+                                .background(replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.gray : Color.purple)
+                                .clipShape(Circle())
+                        }
+                        .disabled(replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
-                    .disabled(replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if showReplyMentionPicker {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(mentionables) { item in
+                                    Button {
+                                        if replyText.hasSuffix("@") {
+                                            replyText = String(replyText.dropLast()) + "@\(item.name) "
+                                        } else {
+                                            replyText += "@\(item.name) "
+                                        }
+                                        showReplyMentionPicker = false
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: item.kind.icon)
+                                                .font(.caption2)
+                                                .foregroundColor(item.kind.color)
+                                            Text(item.name).font(.caption2)
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color(.systemBackground))
+                                        .cornerRadius(10)
+                                        .shadow(color: .black.opacity(0.05), radius: 3, y: 1)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
                 }
             }
+
         }
         .padding()
         .background(Color(.systemBackground))
@@ -495,29 +571,92 @@ private struct UpdateCard: View {
     private func highlightedContent(_ text: String) -> some View {
         Text(attributedContent(text))
             .font(.body)
+            .environment(\.openURL, OpenURLAction { url in
+                guard url.scheme == "famoria",
+                      let host = url.host,
+                      let id = url.pathComponents.dropFirst().first,
+                      let item = mentionables.first(where: { $0.id == "\(host)-\(id)" || $0.id == id }) else {
+                    return .systemAction
+                }
+                onMentionTapped(item)
+                return .handled
+            })
     }
 
+    /// Builds an `AttributedString` where each `@Name` (matched against the
+    /// known mentionables list) becomes a tappable link to the right page.
+    /// Multi-word names ("@Family Dinner") are matched greedily so the whole
+    /// span — not just the first word — is highlighted and tappable.
     private func attributedContent(_ text: String) -> AttributedString {
         var result = AttributedString()
-        let words = text.split(separator: " ", omittingEmptySubsequences: false)
-        for (i, word) in words.enumerated() {
-            if word.hasPrefix("@") {
-                var mention = AttributedString(String(word))
-                mention.foregroundColor = .purple
-                mention.font = .body.weight(.semibold)
-                result.append(mention)
-            } else {
-                result.append(AttributedString(String(word)))
+        var i = text.startIndex
+        while i < text.endIndex {
+            if text[i] == "@" {
+                let after = text.index(after: i)
+                if let (matched, item) = longestMentionMatch(in: text, startingAt: after) {
+                    var mention = AttributedString("@" + matched)
+                    mention.foregroundColor = .purple
+                    mention.font = .body.weight(.semibold)
+                    mention.link = mentionURL(for: item)
+                    result.append(mention)
+                    i = text.index(after, offsetBy: matched.count)
+                    continue
+                }
             }
-            if i < words.count - 1 {
-                result.append(AttributedString(" "))
-            }
+            result.append(AttributedString(String(text[i])))
+            i = text.index(after: i)
         }
         return result
     }
 
+    /// Returns the longest mentionable-name that the substring starting at
+    /// `index` begins with, so "@Family Dinner Plans" matches the event
+    /// "Family Dinner" rather than just the word "Family".
+    private func longestMentionMatch(in text: String, startingAt index: String.Index)
+        -> (String, Mentionable)? {
+        let tail = String(text[index...])
+        var best: (String, Mentionable)?
+        for item in mentionables {
+            guard tail.hasPrefix(item.name) else { continue }
+            if best == nil || item.name.count > (best?.0.count ?? 0) {
+                best = (item.name, item)
+            }
+        }
+        return best
+    }
+
+    private func mentionURL(for item: Mentionable) -> URL? {
+        // famoria://<kind>/<id-with-prefix-stripped>
+        let stripped: String = {
+            let parts = item.id.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+            return parts.count == 2 ? String(parts[1]) : item.id
+        }()
+        return URL(string: "famoria://\(item.kind.rawValue)/\(stripped)")
+    }
+
     private func initials(for name: String) -> String {
         name.split(separator: " ").compactMap { $0.first.map(String.init) }.prefix(2).joined().uppercased()
+    }
+
+    private func avatarURL(for name: String) -> String? {
+        familyMembers.first(where: { $0.name == name })?.avatarURL
+    }
+
+    /// Decodes the post's `activityKind` raw value (if any) into icon/color
+    /// metadata so activity-posts get a distinct chrome from human posts.
+    private var activityKind: (icon: String, color: Color)? {
+        guard let raw = post.activityKind,
+              let kind = FamilyActivityKind(rawValue: raw) else { return nil }
+        switch kind {
+        case .albumCreated:  return ("photo.on.rectangle.angled", .pink)
+        case .photoAdded:    return ("camera.fill", .pink)
+        case .eventCreated:  return ("calendar.badge.plus", .orange)
+        case .eventUpdated:  return ("calendar.badge.exclamationmark", .orange)
+        case .journalAdded:  return ("book.closed.fill", .green)
+        case .recipeAdded:   return ("fork.knife", .red)
+        case .documentAdded: return ("doc.text.fill", .blue)
+        case .memberJoined:  return ("person.crop.circle.badge.plus", .purple)
+        }
     }
 }
 

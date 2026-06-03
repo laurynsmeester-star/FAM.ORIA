@@ -227,6 +227,7 @@ struct FamoriaMobileHeader: View {
 struct FamoriaMobileFooterNav: View {
     @Binding var currentPage: FamoriaPage
     let unreadMessagesCount: Int
+    let upcomingEventsBadge: Int
 
     private let bottomItems: [NavItem] = [
         NavItem(name: "Home",   systemImage: "house.fill",   page: .home),
@@ -244,16 +245,25 @@ struct FamoriaMobileFooterNav: View {
         .overlay(Rectangle().frame(height: 0.5).foregroundColor(.gray.opacity(0.3)), alignment: .top)
     }
 
+    private func badgeCount(for page: FamoriaPage) -> Int {
+        switch page {
+        case .chat:   return unreadMessagesCount
+        case .events: return upcomingEventsBadge
+        default:      return 0
+        }
+    }
+
     private func tabButton(_ item: NavItem) -> some View {
         let isActive = currentPage == item.page
+        let badge = badgeCount(for: item.page)
         return Button {
             currentPage = item.page
         } label: {
             VStack(spacing: 4) {
                 ZStack {
                     Image(systemName: item.systemImage).font(.system(size: 20))
-                    if item.page == .chat && unreadMessagesCount > 0 {
-                        Text(unreadMessagesCount > 99 ? "99+" : "\(unreadMessagesCount)")
+                    if badge > 0 {
+                        Text(badge > 99 ? "99+" : "\(badge)")
                             .font(.caption2).fontWeight(.semibold).foregroundColor(.white)
                             .frame(minWidth: 16, minHeight: 16).padding(.horizontal, 3)
                             .background(Color.red).clipShape(Capsule()).offset(x: 14, y: -10)
@@ -577,7 +587,8 @@ struct FamoriaLayoutView<Content: View>: View {
                 if currentPage != .profile {
                     FamoriaMobileFooterNav(
                         currentPage: $currentPage,
-                        unreadMessagesCount: appState.unreadMessagesCount
+                        unreadMessagesCount: appState.unreadMessagesCount,
+                        upcomingEventsBadge: appState.upcomingEventsBadge
                     )
                 }
             }

@@ -36,7 +36,7 @@ struct HomePageView: View {
             case .familySettings:
                 FamilyAdminView()
             case .familyUpdates:
-                FamilyUpdatesView()
+                FamilyUpdatesView(onNavigate: { page in currentPage = page })
             case .documents:
                 DocumentsView()
             case .journal:
@@ -47,6 +47,12 @@ struct HomePageView: View {
                 FamilyHealthView()
             case .menu:
                 EnhancedHomeTab(onNavigate: { page in currentPage = page })
+            }
+        }
+        .onChange(of: appState.deepLinkPage) { _, newPage in
+            if let newPage {
+                currentPage = newPage
+                appState.deepLinkPage = nil
             }
         }
     }
@@ -88,11 +94,11 @@ struct HomeTab: View {
                     FamilyMembersSection(members: appState.currentFamily?.members ?? [])
                     UpdatesSection(
                         latestMessage: nil as FeedMessage?,
-                        hasUpcomingEvents: !appState.events.filter { $0.date >= Date() }.isEmpty,
+                        hasUpcomingEvents: !appState.events.filter { $0.upcomingDate >= Calendar.current.startOfDay(for: Date()) }.isEmpty,
                         hasRecentAlbums: false
                     )
                     AIQuickActionsGrid(latestMessageAuthor: nil)
-                    UpcomingEventsList(events: appState.events.filter { $0.date >= Date() })
+                    UpcomingEventsList(events: appState.events.filter { $0.upcomingDate >= Calendar.current.startOfDay(for: Date()) })
                     CelebrationCountdown(currentUserName: appState.currentUser?.name)
 
                     LazyVStack(spacing: 12) {
@@ -151,21 +157,54 @@ struct PostComposerView: View {
     let onPost: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            TextField("Share something with your family...", text: $newPost, axis: .vertical)
-                .lineLimit(1...3)
-                .padding()
-                .background(Color(.systemBackground))
-                .cornerRadius(12)
-            Button(action: onPost) {
-                Image(systemName: "paperplane.fill")
-                    .foregroundColor(.white)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                TextField("Share something with your family...", text: $newPost, axis: .vertical)
+                    .lineLimit(1...3)
                     .padding()
-                    .background(newPost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.gray : Color.blue)
-                    .clipShape(Circle())
+                    .background(Color(.systemBackground))
+                    .cornerRadius(12)
+                Button(action: onPost) {
+                    Image(systemName: "paperplane.fill")
+                        .foregroundColor(.white)
+                        .padding()
+                        .background(newPost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.gray : Color.blue)
+                        .clipShape(Circle())
+                }
+                .disabled(newPost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .disabled(newPost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            HStack(spacing: 8) {
+                Button {
+                    pasteLink()
+                } label: {
+                    Label("Paste link", systemImage: "link")
+                        .font(.caption)
+                        .foregroundColor(.purple)
+                }
+
+                Spacer()
+            }
+
+            if let url = LinkExtractor.firstURL(in: newPost) {
+                LinkPreviewView(url: url)
+            }
         }
+    }
+
+    private func pasteLink() {
+        #if canImport(UIKit)
+        if let pasted = UIPasteboard.general.string,
+           LinkExtractor.firstURL(in: pasted) != nil {
+            if newPost.isEmpty {
+                newPost = pasted
+            } else if !newPost.hasSuffix(" ") {
+                newPost += " " + pasted
+            } else {
+                newPost += pasted
+            }
+        }
+        #endif
     }
 }
 
@@ -726,10 +765,17 @@ struct EventRow: View {
                     Text(event.title)
                         .font(.headline)
                     HStack {
-                        Image(systemName: "clock")
-                            .font(.caption)
-                        Text(event.date.formatted(date: .omitted, time: .shortened))
-                            .font(.caption)
+                        if let startTime = event.startTime {
+                            Image(systemName: "clock")
+                                .font(.caption)
+                            Text(startTime.formatted(date: .omitted, time: .shortened))
+                                .font(.caption)
+                        } else {
+                            Image(systemName: "calendar")
+                                .font(.caption)
+                            Text("All day")
+                                .font(.caption)
+                        }
                         Spacer()
                         Text("by \(event.createdBy)")
                             .font(.caption)
@@ -1633,6 +1679,27 @@ struct NotificationsView: View {
                                 .onTapGesture {
                                     appState.markNotificationRead(notification.id)
                                 }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        appState.removeNotification(notification.id)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                                .contextMenu {
+                                    Button(role: .destructive) {
+                                        appState.removeNotification(notification.id)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                    if !notification.isRead {
+                                        Button {
+                                            appState.markNotificationRead(notification.id)
+                                        } label: {
+                                            Label("Mark as Read", systemImage: "checkmark.circle")
+                                        }
+                                    }
+                                }
                         }
                         .onDelete { indexSet in
                             let ids = indexSet.map { appState.notifications[$0].id }
@@ -1647,6 +1714,15 @@ struct NotificationsView: View {
                             }
                             .frame(maxWidth: .infinity)
                             .foregroundColor(.purple)
+                        }
+
+                        Button(role: .destructive) {
+                            for n in appState.notifications {
+                                appState.removeNotification(n.id)
+                            }
+                        } label: {
+                            Label("Clear All", systemImage: "trash")
+                                .frame(maxWidth: .infinity)
                         }
                     }
                 }

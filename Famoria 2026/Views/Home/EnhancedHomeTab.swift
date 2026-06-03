@@ -40,8 +40,8 @@ struct EnhancedHomeTab: View {
     /// when the user only has historical events on record.
     private var nextOrLatestEvent: FamilyEvent? {
         let upcoming = appState.events
-            .filter { $0.date >= Date() }
-            .sorted { $0.date < $1.date }
+            .filter { $0.upcomingDate >= Calendar.current.startOfDay(for: Date()) }
+            .sorted { $0.upcomingDate < $1.upcomingDate }
             .first
         if let upcoming { return upcoming }
         return appState.events.sorted { $0.date > $1.date }.first
@@ -56,8 +56,15 @@ struct EnhancedHomeTab: View {
 
                 // 2. Tasks + Countdown (header row — replaces the family banner)
                 HStack(alignment: .top, spacing: 12) {
-                    UserTasksCard()
-                        .frame(maxWidth: .infinity)
+                    UserTasksCard(onOpenEvent: { task in
+                        if let event = appState.events.first(where: { $0.id == task.eventId }) {
+                            appState.pendingEventDate = event.date
+                        } else if let due = task.dueDate {
+                            appState.pendingEventDate = due
+                        }
+                        onNavigate(.events)
+                    })
+                    .frame(maxWidth: .infinity)
 
                     CelebrationCountdown(
                         currentUserName: appState.currentUser?.name,
@@ -67,8 +74,8 @@ struct EnhancedHomeTab: View {
                             .first,
                         onTap: {
                             if let d = appState.events
-                                .filter({ $0.date >= Date() })
-                                .sorted(by: { $0.date < $1.date })
+                                .filter({ $0.upcomingDate >= Calendar.current.startOfDay(for: Date()) })
+                                .sorted(by: { $0.upcomingDate < $1.upcomingDate })
                                 .first?.date {
                                 appState.pendingEventDate = d
                             }
@@ -86,7 +93,19 @@ struct EnhancedHomeTab: View {
                 )
                 .padding(.horizontal)
 
-                // 4. Updates summary card — each row links to its source location
+                // 4. "Share something with your family…" composer
+                PostComposerView(newPost: $newPost, onPost: addPost)
+                    .padding(.horizontal)
+
+                // 5. Three most recent posts
+                LazyVStack(spacing: 12) {
+                    ForEach(appState.posts.sorted { $0.timestamp > $1.timestamp }.prefix(3)) { post in
+                        PostCard(post: post)
+                    }
+                }
+                .padding(.horizontal)
+
+                // 6. Updates summary card — each row links to its source location
                 UpdatesSection(
                     latestMessage: derivedMessages.first,
                     hasUpcomingEvents: !appState.events.isEmpty,
@@ -127,19 +146,7 @@ struct EnhancedHomeTab: View {
                 )
                 .padding(.horizontal)
 
-                // 8. Post composer
-                PostComposerView(newPost: $newPost, onPost: addPost)
-                    .padding(.horizontal)
-
-                // 9. Posts feed
-                LazyVStack(spacing: 12) {
-                    ForEach(appState.posts.sorted { $0.timestamp > $1.timestamp }) { post in
-                        PostCard(post: post)
-                    }
-                }
-                .padding(.horizontal)
-
-                // 10. Recent messages
+                // Recent messages
                 RecentMessagesSection(
                     messages: derivedMessages,
                     currentUserName: appState.currentUser?.name ?? ""

@@ -115,6 +115,14 @@ final class AppState: ObservableObject {
         chats.reduce(0) { $0 + $1.unreadCount }
     }
 
+    /// Count of unread event-type notifications. Used by the bottom-nav
+    /// badge so the user sees when a family member has added or updated
+    /// an event they haven't viewed yet. Clears as notifications are
+    /// marked read.
+    var upcomingEventsBadge: Int {
+        notifications.filter { !$0.isRead && $0.type == .event }.count
+    }
+
     func markNotificationRead(_ id: String) {
         db.collection("famoria_notifications").document(id).updateData(["isRead": true]) { err in
             if let err {
@@ -224,6 +232,7 @@ final class AppState: ObservableObject {
     private let familyService = FirebaseFamilyService()
     private let contentService = FirebaseContentService()
     private let chatService = FirebaseChatService()
+    let activityService = FamilyActivityService()
     
     // Real-time listeners
     private var familyListener: ListenerRegistration?
@@ -487,6 +496,16 @@ final class AppState: ObservableObject {
             type: .event,
             excludeUserId: user.id
         )
+        Task {
+            await activityService.log(
+                familyId: family.id,
+                kind: .eventCreated,
+                actorName: user.name,
+                actorId: user.id,
+                title: "Added event: \(title)",
+                body: dateStr
+            )
+        }
     }
 
     /// Pushes an event edit to Firestore so other family members see the change.
@@ -550,6 +569,17 @@ final class AppState: ObservableObject {
         if let idx = self.posts.firstIndex(where: { $0.id == post.id }) {
             self.posts[idx].replies.append(reply)
         }
+    }
+
+    /// Looks up a family member's avatarURL by display name. Used by views
+    /// that only know the author name (posts, replies) so they can still
+    /// render the right photo when the member updates their avatar.
+    func avatarURL(forName name: String) -> String? {
+        guard !name.isEmpty else { return nil }
+        if let me = currentUser, me.name == name {
+            return me.avatarURL
+        }
+        return currentFamily?.members.first(where: { $0.name == name })?.avatarURL
     }
 
     /// Uploads the user's avatar photo and updates the URL on both the
