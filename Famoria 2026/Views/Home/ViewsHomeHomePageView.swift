@@ -39,12 +39,22 @@ struct HomePageView: View {
                 FamilyUpdatesView(onNavigate: { page in currentPage = page })
             case .documents:
                 DocumentsView()
+                    .requiresPremium(
+                        featureName: "Document Vault",
+                        featureBlurb: "Store and share legal, medical, insurance, and family records with privacy controls.",
+                        icon: "folder.fill.badge.person.crop"
+                    )
             case .journal:
                 FamilyJournalView()
             case .recipes:
                 RecipesView()
             case .health:
                 FamilyHealthView()
+                    .requiresPremium(
+                        featureName: "Health Center",
+                        featureBlurb: "Track appointments, set health goals, and generate printable family summaries.",
+                        icon: "heart.text.square"
+                    )
             case .menu:
                 EnhancedHomeTab(onNavigate: { page in currentPage = page })
             }
@@ -1006,7 +1016,7 @@ struct ProfileTab: View {
     @State private var isUploadingAvatar = false
 
     private enum ProfileSheet: String, Identifiable {
-        case notifications, security, help, share
+        case notifications, security, help, share, subscription
         var id: String { rawValue }
     }
 
@@ -1023,6 +1033,7 @@ struct ProfileTab: View {
                     profileHeader
                         .padding(.top, 16)
                     if let family = family { familyCard(family) }
+                    premiumSection
                     settingsSection
                     preferencesSection
                     appearanceSection
@@ -1076,6 +1087,7 @@ struct ProfileTab: View {
                 case .security: SecuritySettingsView()
                 case .help: HelpSupportView()
                 case .share: ShareFamoriaSheet(familyName: family?.name ?? "Our Family")
+                case .subscription: SubscriptionView().environmentObject(appState)
                 }
             }
         }
@@ -1237,6 +1249,95 @@ struct ProfileTab: View {
         .background(Color(.systemBackground))
         .cornerRadius(16)
         .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
+    }
+
+    private var premiumSection: some View {
+        let entitlements = appState.entitlements
+        let subscription = appState.currentFamily?.subscription ?? .free
+        let tier = subscription.tier
+        let isPremium = entitlements.isPremium
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("Famoria Plus")
+                .font(.footnote.weight(.semibold))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 4).padding(.bottom, 8)
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(LinearGradient(colors: isPremium ? [.purple, .pink] : [.gray.opacity(0.4), .gray.opacity(0.6)],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 44, height: 44)
+                        Image(systemName: isPremium ? "sparkles" : "star")
+                            .foregroundColor(.white)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(tier.displayName).font(.headline)
+                        if isPremium, let exp = subscription.expiresAt {
+                            Text("Renews \(exp.formatted(date: .abbreviated, time: .omitted))")
+                                .font(.caption).foregroundColor(.secondary)
+                        } else if !isPremium {
+                            Text("Upgrade to unlock the full app.")
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+                    }
+                    Spacer()
+                }
+
+                // Storage progress
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Storage")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Text(appState.storageQuota.displayString(tier: tier))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    ProgressView(value: appState.storageQuota.fraction(tier: tier))
+                        .tint(appState.storageQuota.isApproachingLimit(tier: tier) ? .orange : .purple)
+                }
+
+                if entitlements.canManageBilling {
+                    if !isPremium {
+                        Button {
+                            activeSheet = .subscription
+                        } label: {
+                            Text("Start free trial")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity, minHeight: 42)
+                                .background(LinearGradient(colors: [.purple, .pink],
+                                                           startPoint: .leading, endPoint: .trailing))
+                                .cornerRadius(12)
+                        }
+                    } else {
+                        Button {
+                            Task { await appState.subscriptionManager.openManageSubscriptions() }
+                        } label: {
+                            Label("Manage Subscription", systemImage: "creditcard")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(.purple)
+                                .frame(maxWidth: .infinity, minHeight: 42)
+                                .background(Color.purple.opacity(0.12))
+                                .cornerRadius(12)
+                        }
+                    }
+                    Button {
+                        Task { await appState.subscriptionManager.restorePurchases() }
+                    } label: {
+                        Text("Restore Purchases")
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .padding(16)
+            .background(Color(.systemBackground))
+            .cornerRadius(16)
+            .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
+        }
     }
 
     private var settingsSection: some View {

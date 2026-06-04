@@ -233,6 +233,27 @@ final class AppState: ObservableObject {
     private let contentService = FirebaseContentService()
     private let chatService = FirebaseChatService()
     let activityService = FamilyActivityService()
+
+    /// StoreKit 2 wrapper. Provides product list + current entitlement.
+    let subscriptionManager = SubscriptionManager()
+    /// Cloud Storage usage counter.
+    let storageQuota = StorageQuotaManager()
+    /// Bridges StoreKit changes into the family Firestore doc.
+    private let subscriptionSync = SubscriptionSyncService()
+
+    /// Centralised "can this user do X" derived from the family's
+    /// current subscription + signed-in user role. Recomputed on read,
+    /// no state of its own.
+    var entitlements: EntitlementManager {
+        EntitlementManager(
+            subscription: currentFamily?.subscription ?? .free,
+            userRole: currentUser?.role
+        )
+    }
+
+    /// Captures the StoreKit closure once so we don't accidentally
+    /// rewire it on every observe call.
+    private var wiredSubscriptionSync = false
     
     // Real-time listeners
     private var familyListener: ListenerRegistration?
@@ -354,6 +375,9 @@ final class AppState: ObservableObject {
         chats = []
         messagesByChat = [:]
         activeChatId = nil
+        storageQuota.stop()
+        wiredSubscriptionSync = false
+        subscriptionManager.onStatusChanged = nil
     }
     
     // MARK: - Family Management
@@ -807,16 +831,52 @@ final class AppState: ObservableObject {
             // Fetch initial data
             let family = try await familyService.fetchFamily(familyId: familyId)
             self.currentFamily = family
-            
+
             let (posts, events) = try await contentService.fetchAllContent(familyId: familyId)
             self.posts = posts
             self.events = events
-            
+
             // Set up real-time listeners
             observeLiveUpdates(familyId: familyId)
+
+            // Subscription + storage quota
+            storageQuota.start(familyId: familyId)
+            await startSubscriptionLifecycle(familyId: familyId)
         } catch {
             Log.appState.error("Error loading family data: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// Boots the StoreKit listener, loads products, refreshes the user's
+    /// entitlement, and (if they own billing) wires the StoreKit → Firestore
+    /// sync. Idempotent — calling it multiple times is safe.
+    private func startSubscriptionLifecycle(familyId: String) async {
+        await subscriptionManager.loadProducts()
+        await subscriptionManager.refreshEntitlement()
+
+        guard !wiredSubscriptionSync else { return }
+        wiredSubscriptionSync = true
+        subscriptionManager.onStatusChanged = { [weak self] in
+            await self?.syncSubscriptionToFamily()
+        }
+        await syncSubscriptionToFamily()
+    }
+
+    /// Writes the current SubscriptionManager state to the family doc —
+    /// but only when the signed-in user is the family billing owner.
+    /// Non-owners read the family doc and inherit; they never write.
+    private func syncSubscriptionToFamily() async {
+        guard let family = currentFamily,
+              let user = currentUser,
+              entitlements.canManageBilling else { return }
+        await subscriptionSync.syncToFamily(
+            familyId: family.id,
+            ownerUserId: user.id,
+            status: subscriptionManager.currentStatus,
+            expiresAt: subscriptionManager.expiresAt,
+            activeProductId: subscriptionManager.activeProductId,
+            inTrial: subscriptionManager.inTrial
+        )
     }
     
     /// Sets up real-time listeners for family, posts, and events

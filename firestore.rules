@@ -34,13 +34,43 @@ service cloud.firestore {
       allow write: if isSelf(userId);
     }
 
+    // ------------------------------------------------------------
+    // Subscription helpers
+    // ------------------------------------------------------------
+
+    // Only the field-level subscription writer (the family billing owner)
+    // may set subscription/* fields on the family doc. We let any family
+    // member touch the rest of the document (name, members denormals,
+    // storageUsedBytes) but lock subscription state to the owner uid.
+    function isSubscriptionOwner(familyId) {
+      return isSignedIn() &&
+             get(/databases/$(database)/documents/families/$(familyId))
+               .data.subscriptionOwnerUID == request.auth.uid;
+    }
+
+    // Detects whether the incoming write touches any subscription field.
+    function touchesSubscription() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['subscriptionTier','subscriptionStatus','subscriptionExpiration',
+                 'subscriptionOwnerUID','subscriptionProductID','subscriptionInTrial',
+                 'subscriptionUpdatedAt','storageLimit']);
+    }
+
     // Families.
     match /families/{familyId} {
       allow read: if isMemberOfFamily(familyId);
       // Creating a family is allowed for any authenticated user; updates
       // require membership.
       allow create: if isSignedIn();
-      allow update, delete: if isMemberOfFamily(familyId);
+      // Updates: any family member can edit non-subscription fields.
+      // Subscription fields are owner-only. The very first owner write
+      // (when subscriptionOwnerUID is not yet set) is allowed for any
+      // signed-in member of the family.
+      allow update: if isMemberOfFamily(familyId) &&
+                       (!touchesSubscription() ||
+                        !('subscriptionOwnerUID' in resource.data) ||
+                        request.auth.uid == resource.data.subscriptionOwnerUID);
+      allow delete: if isMemberOfFamily(familyId);
 
       match /members/{memberId} {
         allow read: if isMemberOfFamily(familyId) || isSelf(memberId);
@@ -91,9 +121,37 @@ service cloud.firestore {
       allow read, write: if isSignedIn();
     }
 
-    // Documents.
+    // Documents (Document Vault). Privacy is enforced server-side by
+    // checking the `privacyLevel` and `sharedWith` fields against the
+    // requester. Owners always retain full access.
     match /famoria_documents/{docId} {
-      allow read, write: if isSignedIn();
+      function docData() {
+        return resource.data;
+      }
+      function isOwnerOfDoc() {
+        return isSignedIn() && docData().ownerUID == request.auth.uid;
+      }
+      function isAdminOfDocFamily() {
+        return isSignedIn() &&
+               docData().familyId is string &&
+               exists(/databases/$(database)/documents/families/$(docData().familyId)/members/$(request.auth.uid)) &&
+               get(/databases/$(database)/documents/families/$(docData().familyId)/members/$(request.auth.uid)).data.role in ['owner','admin'];
+      }
+      function isFamilyMemberOfDoc() {
+        return isSignedIn() &&
+               docData().familyId is string &&
+               exists(/databases/$(database)/documents/families/$(docData().familyId)/members/$(request.auth.uid));
+      }
+      allow read: if isOwnerOfDoc() ||
+                     (docData().privacyLevel == 'familyVisible' && isFamilyMemberOfDoc()) ||
+                     (docData().privacyLevel == 'adminOnly' && isAdminOfDocFamily()) ||
+                     (docData().privacyLevel == 'sharedWithSelectedMembers' &&
+                      (docData().sharedWith is list) &&
+                      request.auth.uid in docData().sharedWith);
+      allow create: if isSignedIn() &&
+                       request.resource.data.ownerUID == request.auth.uid;
+      allow update: if isOwnerOfDoc();
+      allow delete: if isOwnerOfDoc() || isAdminOfDocFamily();
     }
     // Document comments — the app writes to `famoria_doc_comments`.
     // `famoria_document_comments` is kept for any legacy/backfilled data.

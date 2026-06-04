@@ -219,17 +219,29 @@ final class FirebaseFamilyService {
             
             let roleString = data["role"] as? String
             let role = MemberRole(rawValue: roleString ?? "member")
-            
+            let avatarURL = data["avatarURL"] as? String
+
             return User(
                 id: id,
                 name: name,
                 email: email,
                 familyId: familyId,
-                role: role
+                role: role,
+                avatarURL: avatarURL
             )
         }
-        
-        return Family(id: familyId, name: name, members: members)
+
+        let subscription = SubscriptionSyncService.decodeFamilySubscription(from: data)
+        let storageBytes = (data["storageUsedBytes"] as? Int64)
+            ?? Int64(data["storageUsedBytes"] as? Int ?? 0)
+
+        return Family(
+            id: familyId,
+            name: name,
+            members: members,
+            subscription: subscription,
+            storageUsedBytes: storageBytes
+        )
     }
     
     /// Fetches user data from Firestore

@@ -56,11 +56,29 @@ public struct Family: Identifiable, Equatable, Codable {
     public var name: String
 
     public var members: [User]
-    
-    public init(id: String, name: String, members: [User]) {
+
+    /// Family-level subscription record. One admin pays; every member
+    /// inherits premium access. Stored under `families/{id}` as flat
+    /// fields (subscriptionTier, subscriptionStatus, …) and folded back
+    /// into this struct by `AppState` when the family doc syncs.
+    public var subscription: FamilySubscription
+
+    /// Cached "bytes uploaded" counter for the storage quota indicator.
+    /// Updated by StorageQuotaManager as the family adds photos/docs.
+    public var storageUsedBytes: Int64
+
+    public init(
+        id: String,
+        name: String,
+        members: [User],
+        subscription: FamilySubscription = .free,
+        storageUsedBytes: Int64 = 0
+    ) {
         self.id = id
         self.name = name
         self.members = members
+        self.subscription = subscription
+        self.storageUsedBytes = storageUsedBytes
     }
 }
 

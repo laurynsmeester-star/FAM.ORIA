@@ -1,0 +1,76 @@
+{
+  "identifier" : "DCE8C7C7-C9AB-4F7E-AFD2-5BC0AC9D7B16",
+  "nonRenewingSubscriptions" : [],
+  "products" : [],
+  "settings" : {
+    "_applicationInternalID" : "famoria",
+    "_developerTeamID" : "",
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : []
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "21581290",
+      "localizations" : [],
+      "name" : "Famoria Plus",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "6.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "11111111",
+          "introductoryOffer" : {
+            "internalID" : "22222222",
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P7D"
+          },
+          "localizations" : [
+            {
+              "description" : "Unlimited family members, expanded storage, document vault, health center, printable reports.",
+              "displayName" : "Famoria Plus Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.famoria.plus.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Famoria Plus Monthly",
+          "subscriptionGroupID" : "21581290",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "59.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "33333333",
+          "introductoryOffer" : {
+            "internalID" : "44444444",
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P7D"
+          },
+          "localizations" : [
+            {
+              "description" : "Save 28% — unlimited members, expanded storage, document vault, health center, printable reports.",
+              "displayName" : "Famoria Plus Annual",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.famoria.plus.annual",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Famoria Plus Annual",
+          "subscriptionGroupID" : "21581290",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}
