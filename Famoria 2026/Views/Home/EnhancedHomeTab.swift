@@ -97,10 +97,25 @@ struct EnhancedHomeTab: View {
                 PostComposerView(newPost: $newPost, onPost: addPost)
                     .padding(.horizontal)
 
-                // 5. Three most recent posts
-                LazyVStack(spacing: 12) {
-                    ForEach(appState.posts.sorted { $0.timestamp > $1.timestamp }.prefix(3)) { post in
-                        PostCard(post: post)
+                // 5. Daily family prompt — rotating question that posts as
+                // a FamilyPost when the user answers.
+                DailyPromptCard()
+                    .padding(.horizontal)
+
+                // 5b. Family Stream — merged chronological feed of posts,
+                // events, album activity, and "On This Day" memories.
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Family Stream")
+                        .font(.headline)
+                    LazyVStack(spacing: 10) {
+                        ForEach(FamilyStreamBuilder.build(
+                            posts: appState.posts,
+                            events: appState.events
+                        )) { item in
+                            StreamCard(item: item) {
+                                handleStreamTap(item)
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal)
@@ -171,12 +186,25 @@ struct EnhancedHomeTab: View {
         let trimmed = newPost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         newPost = ""
+        Haptics.send()
         Task {
             do {
                 try await appState.createPost(content: trimmed)
             } catch {
                 Log.appState.error("createPost failed: \(error.localizedDescription, privacy: .public)")
             }
+        }
+    }
+
+    private func handleStreamTap(_ item: StreamItem) {
+        switch item.kind {
+        case .post, .onThisDay:
+            onNavigate(.familyUpdates)
+        case .event(let event):
+            appState.pendingEventDate = event.date
+            onNavigate(.events)
+        case .albumActivity:
+            onNavigate(.albums)
         }
     }
 }

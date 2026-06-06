@@ -3,6 +3,7 @@ import os
 import SwiftUI
 import Combine
 import FirebaseFirestore
+import FirebaseStorage
 
 protocol AuthService {
     func signIn(email: String, password: String) async throws -> User
@@ -765,6 +766,52 @@ final class AppState: ObservableObject {
     func deleteMessage(_ messageId: String, in chatId: String) async throws {
         try await chatService.deleteMessage(messageId: messageId, chatId: chatId)
         messagesByChat[chatId]?.removeAll { $0.id == messageId }
+    }
+
+    /// Sends a voice-note message. The recorder produces a temp file
+    /// URL; we upload it to Storage under chat_voice/{chatId}/ and then
+    /// post the message.
+    func sendVoiceMessage(to chatId: String, fileURL: URL, duration: TimeInterval) async throws {
+        guard let user = currentUser else { throw AppStateError.notAuthenticated }
+        let storageRef = Storage.storage().reference()
+            .child("chat_voice/\(chatId)/\(fileURL.lastPathComponent)")
+        let metadata = StorageMetadata()
+        metadata.contentType = "audio/m4a"
+        _ = try await storageRef.putFileAsync(from: fileURL, metadata: metadata)
+        let url = try await storageRef.downloadURL().absoluteString
+
+        let message = try await chatService.sendVoiceMessage(
+            chatId: chatId,
+            senderId: user.id,
+            senderName: user.name,
+            voiceURL: url,
+            duration: duration
+        )
+
+        var current = messagesByChat[chatId] ?? []
+        current.append(message)
+        messagesByChat[chatId] = current
+
+        // Clean up the temp file once it's safely on Storage.
+        try? FileManager.default.removeItem(at: fileURL)
+
+        if let chat = chats.first(where: { $0.id == chatId }) {
+            let recipientIds = chat.participants.map(\.id)
+            notifyUsers(
+                recipientIds,
+                title: "\(user.name) sent a voice note",
+                body: "🎤 \(Int(duration.rounded()))s",
+                type: .message,
+                excludeUserId: user.id
+            )
+        }
+    }
+
+    /// Marks a message as seen by the current user. Safe to call from
+    /// `onAppear` of each message bubble; cheap no-op when already read.
+    func markMessageRead(_ messageId: String, in chatId: String) {
+        guard let user = currentUser else { return }
+        Task { await chatService.markMessageRead(messageId: messageId, chatId: chatId, userId: user.id) }
     }
 
     /// Delete an entire chat

@@ -192,6 +192,7 @@ struct FamilyUpdatesView: View {
     }
 
     private func toggleReaction(_ emoji: String, on post: FamilyPost) async {
+        Haptics.selection()
         do {
             try await appState.toggleReaction(emoji, on: post)
         } catch {

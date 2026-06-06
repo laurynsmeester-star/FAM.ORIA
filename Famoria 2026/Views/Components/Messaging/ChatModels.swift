@@ -28,6 +28,7 @@ struct ChatParticipant: Identifiable, Codable, Equatable, Hashable {
 enum MessageType: String, Codable, Equatable {
     case text
     case image
+    case voice
     case system // "Lauryn added John", etc.
 }
 
@@ -48,10 +49,15 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     let isSystem: Bool
     var messageType: MessageType = .text
     var imageURL: String? = nil
+    var voiceURL: String? = nil
+    var voiceDuration: TimeInterval? = nil
     var reactions: [MessageReaction] = []
     var replyToId: String? = nil
     var replyToContent: String? = nil
     var replyToSenderName: String? = nil
     var deliveredAt: Date? = nil
     var readAt: Date? = nil
+    /// Per-user read receipt tracking. Keys are user ids; values are
+    /// timestamps. Surfaces as the "Seen by …" line under sent messages.
+    var readBy: [String: Date] = [:]
 }

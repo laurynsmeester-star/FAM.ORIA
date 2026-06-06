@@ -596,6 +596,7 @@ struct UserTasksCard: View {
             ForEach(store.tasks.prefix(4)) { task in
                 HStack(spacing: 8) {
                     Button {
+                        if !task.isDone { Haptics.success() } else { Haptics.selection() }
                         store.toggle(task.id)
                     } label: {
                         Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
@@ -615,6 +616,7 @@ struct UserTasksCard: View {
             ForEach(store.assignedEventTasks.prefix(max(0, 4 - store.tasks.count)), id: \.id) { task in
                 HStack(spacing: 8) {
                     Button {
+                        if !task.isDone { Haptics.success() } else { Haptics.selection() }
                         store.toggleAssignedEventTask(task)
                     } label: {
                         Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")

@@ -330,7 +330,15 @@ struct ChatDetailView: View {
                     }
                 }
 
-                if !msg.content.isEmpty && msg.messageType != .image {
+                if msg.messageType == .voice, let urlString = msg.voiceURL, let url = URL(string: urlString) {
+                    VoiceMessageBubble(
+                        url: url,
+                        duration: msg.voiceDuration ?? 0,
+                        isSelf: isSelf
+                    )
+                }
+
+                if !msg.content.isEmpty && msg.messageType != .image && msg.messageType != .voice {
                     styledMessageContent(msg.content, isSelf: isSelf)
 
                     if let url = LinkExtractor.firstURL(in: msg.content) {
@@ -342,12 +350,63 @@ struct ChatDetailView: View {
                 if !msg.reactions.isEmpty {
                     reactionsView(for: msg)
                 }
+
+                if isSelf, let receipt = readReceiptText(for: msg) {
+                    Text(receipt)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .padding(.trailing, 6)
+                }
             }
 
             if !isSelf { Spacer(minLength: 50) }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 1)
+        .offset(x: swipeOffset(for: msg))
+        .gesture(swipeToReplyGesture(for: msg))
+        .onAppear {
+            if !isSelf, let uid = currentUserId, !msg.readBy.keys.contains(uid) {
+                appState.markMessageRead(msg.id, in: chat.id)
+            }
+        }
+    }
+
+    @GestureState private var swipeDragOffset: CGFloat = 0
+    @State private var activeSwipeMessageId: String?
+
+    private func swipeOffset(for msg: ChatMessage) -> CGFloat {
+        guard activeSwipeMessageId == msg.id else { return 0 }
+        return min(0, swipeDragOffset)
+    }
+
+    private func swipeToReplyGesture(for msg: ChatMessage) -> some Gesture {
+        DragGesture(minimumDistance: 20)
+            .updating($swipeDragOffset) { value, state, _ in
+                if value.translation.width < 0 {
+                    state = max(value.translation.width, -80)
+                }
+            }
+            .onChanged { _ in
+                if activeSwipeMessageId != msg.id { activeSwipeMessageId = msg.id }
+            }
+            .onEnded { value in
+                activeSwipeMessageId = nil
+                if value.translation.width < -50 {
+                    Haptics.selection()
+                    replyingTo = msg
+                    isInputActive = true
+                }
+            }
+    }
+
+    private func readReceiptText(for msg: ChatMessage) -> String? {
+        let me = currentUserId
+        let othersWhoRead = msg.readBy.keys.filter { $0 != me }
+        guard !othersWhoRead.isEmpty else {
+            return msg.deliveredAt != nil ? "Delivered" : nil
+        }
+        return "Seen"
     }
 
     private func styledMessageContent(_ content: String, isSelf: Bool) -> some View {
@@ -457,6 +516,7 @@ struct ChatDetailView: View {
                 ForEach(["❤️", "👍", "😂", "😮", "😢", "🔥"], id: \.self) { emoji in
                     Button {
                         Task {
+                            Haptics.selection()
                             try? await appState.addReaction(emoji, to: msg.id, in: chat.id)
                         }
                         showReactionPicker = nil
@@ -647,20 +707,112 @@ struct ChatDetailView: View {
                     }
                 }
 
-            Button {
-                send()
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 32))
-                    .foregroundColor(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .gray : .blue)
+            if messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                voiceRecordButton
+            } else {
+                Button {
+                    send()
+                    Haptics.send()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(.blue)
+                }
+                .disabled(isSending)
+                .accessibilityLabel("Send message")
             }
-            .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
-            .accessibilityLabel("Send message")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial)
+        .overlay(alignment: .top) {
+            if voiceRecorder.isRecording {
+                voiceRecordingOverlay
+            }
+        }
+    }
+
+    // MARK: - Voice notes
+
+    @StateObject private var voiceRecorder = VoiceNoteRecorder()
+
+    private var voiceRecordButton: some View {
+        Image(systemName: voiceRecorder.isRecording ? "stop.circle.fill" : "mic.circle.fill")
+            .font(.system(size: 32))
+            .foregroundColor(voiceRecorder.isRecording ? .red : .blue)
+            .onLongPressGesture(minimumDuration: 0.2, perform: {
+                // Long-press is the canonical "hold to record" gesture.
+            }, onPressingChanged: { isPressing in
+                if isPressing {
+                    Task {
+                        let ok = await voiceRecorder.start()
+                        if ok {
+                            Haptics.tap(.medium)
+                        } else {
+                            Haptics.warning()
+                        }
+                    }
+                } else {
+                    finishVoiceRecording()
+                }
+            })
+            .accessibilityLabel("Record voice note")
+            .accessibilityHint("Press and hold to record")
+    }
+
+    private var voiceRecordingOverlay: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 10, height: 10)
+                .opacity(voiceRecorder.level > 0.1 ? 1 : 0.4)
+            Text("Recording — \(formattedDuration(voiceRecorder.duration))")
+                .font(.caption)
+                .foregroundColor(.primary)
+            Spacer()
+            Button {
+                voiceRecorder.cancel()
+                Haptics.warning()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color(.systemBackground))
+        .cornerRadius(12)
+        .shadow(color: .black.opacity(0.1), radius: 6, y: -2)
+        .padding(.horizontal, 12)
+        .padding(.top, -4)
+    }
+
+    private func finishVoiceRecording() {
+        guard let result = voiceRecorder.stop() else { return }
+        // Discard ultra-short presses (< 0.5s) — they're almost always
+        // accidental taps.
+        guard result.duration > 0.5 else {
+            try? FileManager.default.removeItem(at: result.url)
+            return
+        }
+        Haptics.success()
+        Task {
+            do {
+                try await appState.sendVoiceMessage(
+                    to: chat.id,
+                    fileURL: result.url,
+                    duration: result.duration
+                )
+            } catch {
+                Haptics.warning()
+            }
+        }
+    }
+
+    private func formattedDuration(_ d: TimeInterval) -> String {
+        let mins = Int(d) / 60
+        let secs = Int(d) % 60
+        return String(format: "%d:%02d", mins, secs)
     }
 
     // MARK: - Actions
@@ -839,5 +991,71 @@ struct RoundedCorner: Shape {
             )
         )
         .environmentObject(AppState())
+    }
+}
+
+// MARK: - Voice Message Bubble
+
+/// Compact chat bubble for voice-note playback. Shows a play/pause
+/// button, a static waveform-like bar, and the message duration. Uses
+/// the shared `VoiceNotePlayer` so only one bubble plays at a time.
+struct VoiceMessageBubble: View {
+    let url: URL
+    let duration: TimeInterval
+    let isSelf: Bool
+
+    @ObservedObject private var player = VoiceNotePlayer.shared
+
+    private var isCurrent: Bool { player.currentURL == url }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                Haptics.selection()
+                player.toggle(url: url)
+            } label: {
+                Image(systemName: isCurrent && player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.headline)
+                    .foregroundColor(isSelf ? .white : .blue)
+                    .frame(width: 32, height: 32)
+                    .background((isSelf ? Color.white : Color.blue).opacity(0.18))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+
+            // Static "waveform" bars — visual cue rather than a real FFT.
+            HStack(spacing: 2) {
+                ForEach(0..<22, id: \.self) { i in
+                    Capsule()
+                        .fill(isSelf ? Color.white : Color.blue)
+                        .frame(width: 2, height: barHeight(for: i, isPlaying: isCurrent && player.isPlaying, progress: player.progress))
+                        .opacity(isCurrent && player.progress > Double(i) / 22.0 ? 1.0 : 0.4)
+                }
+            }
+            .frame(height: 22)
+
+            Text(formatted(duration))
+                .font(.caption.weight(.medium))
+                .foregroundColor(isSelf ? .white.opacity(0.85) : .secondary)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .background(isSelf ? Color.blue : Color(.secondarySystemBackground))
+        .cornerRadius(20, corners: isSelf
+                       ? [.topLeft, .topRight, .bottomLeft]
+                       : [.topLeft, .topRight, .bottomRight])
+    }
+
+    private func barHeight(for index: Int, isPlaying: Bool, progress: Double) -> CGFloat {
+        // Stable pseudo-random pattern so each bar has its own height
+        // but the bubble looks the same every render.
+        let base: CGFloat = [6, 14, 10, 18, 8, 16, 12, 20, 9, 17, 11][index % 11]
+        return base
+    }
+
+    private func formatted(_ d: TimeInterval) -> String {
+        let mins = Int(d) / 60
+        let secs = Int(d) % 60
+        return String(format: "%d:%02d", mins, secs)
     }
 }

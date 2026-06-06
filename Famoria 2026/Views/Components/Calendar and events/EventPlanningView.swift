@@ -77,6 +77,7 @@ final class EventPlanningStore: ObservableObject {
         guard let familyId, let i = rsvps.firstIndex(where: { $0.id == id }) else { return }
         var updated = rsvps[i]
         updated.status = status
+        Haptics.success()
         Task { try? await service.upsert(rsvp: updated, familyId: familyId, eventId: event.id) }
     }
     func deleteRSVP(_ id: String) {
@@ -93,6 +94,7 @@ final class EventPlanningStore: ObservableObject {
         guard let familyId, let i = tasks.firstIndex(where: { $0.id == id }) else { return }
         var updated = tasks[i]
         updated.isCompleted.toggle()
+        if updated.isCompleted { Haptics.success() } else { Haptics.selection() }
         Task { try? await service.upsert(task: updated, familyId: familyId, eventId: event.id) }
     }
     func deleteTask(_ id: String) {

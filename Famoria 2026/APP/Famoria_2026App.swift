@@ -42,6 +42,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 }
             }
         }
+        // Register actionable notification categories so the RSVP /
+        // Mark-done / Reply buttons appear on the lock screen.
+        FamoriaNotificationCategories.register()
 
         return true
     }
@@ -60,6 +63,25 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
+        let actionId = response.actionIdentifier
+
+        // Handle the tap-buttons first; they're more specific than the
+        // default-tap "open the right page" path below.
+        if let action = FamoriaNotifAction(rawValue: actionId) {
+            let textReply = (response as? UNTextInputNotificationResponse)?.userText
+            NotificationCenter.default.post(
+                name: .famoriaNotificationAction,
+                object: nil,
+                userInfo: [
+                    "action": action.rawValue,
+                    "userInfo": userInfo,
+                    "textReply": textReply ?? ""
+                ]
+            )
+            completionHandler()
+            return
+        }
+
         if let page = userInfo["page"] as? String {
             NotificationCenter.default.post(name: .famoriaDeepLink, object: page)
         }
@@ -87,6 +109,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
 extension Notification.Name {
     static let famoriaDeepLink = Notification.Name("famoriaDeepLink")
+    /// Fired when the user taps one of the actionable notification
+    /// buttons (RSVP, Mark done, inline Reply). userInfo carries:
+    ///   - "action"     : FamoriaNotifAction.rawValue
+    ///   - "userInfo"   : the originating notification's userInfo
+    ///   - "textReply"  : inline reply text (or empty string)
+    static let famoriaNotificationAction = Notification.Name("famoriaNotificationAction")
 }
 
 // MARK: - Local Notification Scheduler
@@ -144,23 +172,96 @@ enum FamoriaNotificationScheduler {
 @main
 struct Famoria_2026App: App {
     @StateObject private var appState = AppState()
+    @StateObject private var lockManager = AppLockManager()
     @UIApplicationDelegateAdaptor(AppDelegate.self) var delegate
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environmentObject(appState)
-                .onReceive(NotificationCenter.default.publisher(for: .famoriaDeepLink)) { notification in
-                    if let page = notification.object as? String,
-                       let famoriaPage = FamoriaPage(rawValue: page) {
-                        appState.deepLinkPage = famoriaPage
+            ZStack {
+                RootView()
+                    .environmentObject(appState)
+                    .environmentObject(lockManager)
+                    .onReceive(NotificationCenter.default.publisher(for: .famoriaDeepLink)) { notification in
+                        if let page = notification.object as? String,
+                           let famoriaPage = FamoriaPage(rawValue: page) {
+                            appState.deepLinkPage = famoriaPage
+                        }
                     }
-                }
-                .onChange(of: appState.events) { _, events in
-                    if UserDefaults.standard.bool(forKey: "famoria.notif.reminders") != false {
-                        FamoriaNotificationScheduler.scheduleAllEventReminders(events: events)
+                    .onReceive(NotificationCenter.default.publisher(for: .famoriaNotificationAction)) { notification in
+                        guard let info = notification.userInfo,
+                              let actionRaw = info["action"] as? String,
+                              let action = FamoriaNotifAction(rawValue: actionRaw) else { return }
+                        let userInfo = (info["userInfo"] as? [AnyHashable: Any]) ?? [:]
+                        let textReply = info["textReply"] as? String ?? ""
+                        Task { await handleActionableNotification(
+                            action: action,
+                            userInfo: userInfo,
+                            textReply: textReply
+                        ) }
                     }
+                    .onChange(of: appState.events) { _, events in
+                        if UserDefaults.standard.bool(forKey: "famoria.notif.reminders") != false {
+                            FamoriaNotificationScheduler.scheduleAllEventReminders(events: events)
+                        }
+                    }
+
+                if lockManager.isLocked {
+                    AppLockOverlay()
+                        .environmentObject(lockManager)
+                        .transition(.opacity)
+                        .zIndex(1)
                 }
+            }
+            .animation(.easeInOut(duration: 0.2), value: lockManager.isLocked)
+        }
+    }
+
+    /// Bridges the user's notification-action tap back into Famoria
+    /// services. The notification payload is expected to carry the
+    /// target ids (eventId, taskId, chatId) under `userInfo`.
+    @MainActor
+    private func handleActionableNotification(
+        action: FamoriaNotifAction,
+        userInfo: [AnyHashable: Any],
+        textReply: String
+    ) async {
+        switch action {
+        case .rsvpYes, .rsvpMaybe, .rsvpNo:
+            guard let eventId = userInfo["eventId"] as? String,
+                  let familyId = appState.currentFamily?.id,
+                  let user = appState.currentUser else { return }
+            let status: String
+            switch action {
+            case .rsvpYes:   status = "attending"
+            case .rsvpMaybe: status = "maybe"
+            case .rsvpNo:    status = "not_attending"
+            default:         status = "pending"
+            }
+            await EventPlanningRSVPWriter.recordRSVP(
+                familyId: familyId,
+                eventId: eventId,
+                memberName: user.name,
+                status: status
+            )
+
+        case .markTaskDone:
+            guard let user = appState.currentUser else { return }
+            if let personalId = userInfo["personalTaskId"] as? String {
+                await UserTasksQuickActions.markDone(userId: user.id, taskId: personalId)
+            } else if let eventTaskId = userInfo["eventTaskId"] as? String,
+                      let eventId = userInfo["eventId"] as? String,
+                      let familyId = appState.currentFamily?.id {
+                await UserTasksQuickActions.markEventTaskDone(
+                    familyId: familyId,
+                    eventId: eventId,
+                    taskId: eventTaskId
+                )
+            }
+
+        case .reply:
+            guard !textReply.isEmpty,
+                  let chatId = userInfo["chatId"] as? String else { return }
+            try? await appState.sendMessage(to: chatId, content: textReply)
         }
     }
 }

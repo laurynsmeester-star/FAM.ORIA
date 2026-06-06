@@ -1003,6 +1003,7 @@ struct InviteSheet: View {
 
 struct ProfileTab: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var lockManager: AppLockManager
     @AppStorage("famoria.darkMode") private var darkMode = false
     @AppStorage("famoria.staySignedIn") private var staySignedIn = true
     @State private var showSignOutAlert = false
@@ -1380,6 +1381,26 @@ struct ProfileTab: View {
                     Text("Stay Signed In").font(.body)
                     Spacer()
                     Toggle("", isOn: $staySignedIn).labelsHidden()
+                }
+                .padding()
+
+                Divider().padding(.leading, 60)
+
+                HStack(spacing: 14) {
+                    Image(systemName: "faceid")
+                        .font(.body).foregroundColor(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.purple).cornerRadius(8)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("App Lock (\(lockManager.biometryLabel))").font(.body)
+                        Text("Require authentication on launch.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { lockManager.isEnabled },
+                        set: { lockManager.setEnabled($0); Haptics.selection() }
+                    )).labelsHidden()
                 }
                 .padding()
             }

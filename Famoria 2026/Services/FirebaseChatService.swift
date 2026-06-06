@@ -129,6 +129,59 @@ final class FirebaseChatService {
         )
     }
 
+    // MARK: - Send Voice Note
+
+    /// Sends a voice-note message. `voiceURL` should already be a public
+    /// Storage download URL (see ChatDetailView's upload helper).
+    func sendVoiceMessage(
+        chatId: String,
+        senderId: String,
+        senderName: String,
+        voiceURL: String,
+        duration: TimeInterval
+    ) async throws -> ChatMessage {
+        let messageId = UUID().uuidString
+        let timestamp = Date()
+
+        let messageData: [String: Any] = [
+            "id": messageId,
+            "senderId": senderId,
+            "senderName": senderName,
+            "content": "",
+            "timestamp": Timestamp(date: timestamp),
+            "isRead": false,
+            "isSystem": false,
+            "messageType": "voice",
+            "voiceURL": voiceURL,
+            "voiceDuration": duration,
+            "reactions": [],
+            "readBy": [senderId: Timestamp(date: timestamp)],
+            "deliveredAt": Timestamp(date: timestamp)
+        ]
+
+        try await messagesRef(chatId: chatId).document(messageId).setData(messageData)
+        try await chatsRef.document(chatId).updateData([
+            "lastMessageContent": "Sent a voice note",
+            "lastMessageSenderName": senderName,
+            "lastMessageTimestamp": Timestamp(date: timestamp)
+        ])
+
+        return ChatMessage(
+            id: messageId,
+            chatId: chatId,
+            senderId: senderId,
+            senderName: senderName,
+            content: "",
+            timestamp: timestamp,
+            isRead: false,
+            isSystem: false,
+            messageType: .voice,
+            voiceURL: voiceURL,
+            voiceDuration: duration,
+            deliveredAt: timestamp
+        )
+    }
+
     // MARK: - Reactions
 
     func addReaction(emoji: String, toMessage messageId: String, inChat chatId: String, userId: String, userName: String) async throws {
@@ -407,13 +460,45 @@ final class FirebaseChatService {
             isSystem: data["isSystem"] as? Bool ?? false,
             messageType: messageType,
             imageURL: data["imageURL"] as? String,
+            voiceURL: data["voiceURL"] as? String,
+            voiceDuration: data["voiceDuration"] as? TimeInterval,
             reactions: reactions,
             replyToId: data["replyToId"] as? String,
             replyToContent: data["replyToContent"] as? String,
             replyToSenderName: data["replyToSenderName"] as? String,
             deliveredAt: (data["deliveredAt"] as? Timestamp)?.dateValue(),
-            readAt: (data["readAt"] as? Timestamp)?.dateValue()
+            readAt: (data["readAt"] as? Timestamp)?.dateValue(),
+            readBy: Self.decodeReadBy(data["readBy"])
         )
+    }
+
+    /// Decode a `readBy` map of `{userId: Timestamp}` into a Swift
+    /// dictionary of dates.
+    private static func decodeReadBy(_ raw: Any?) -> [String: Date] {
+        guard let dict = raw as? [String: Any] else { return [:] }
+        var result: [String: Date] = [:]
+        for (uid, value) in dict {
+            if let ts = value as? Timestamp {
+                result[uid] = ts.dateValue()
+            } else if let d = value as? Date {
+                result[uid] = d
+            }
+        }
+        return result
+    }
+
+    /// Marks the message as read by `userId` and stamps `readBy.{userId}`
+    /// with the current server time. Used by ChatDetailView when a
+    /// message becomes visible.
+    func markMessageRead(messageId: String, chatId: String, userId: String) async {
+        do {
+            try await messagesRef(chatId: chatId).document(messageId).updateData([
+                "readBy.\(userId)": Timestamp(date: Date())
+            ])
+        } catch {
+            // Non-fatal; a missing read receipt isn't worth surfacing.
+            Log.chat.debug("markMessageRead failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }
 
