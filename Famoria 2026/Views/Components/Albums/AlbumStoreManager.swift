@@ -14,6 +14,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import AVFoundation
 import FirebaseFirestore
 import FirebaseStorage
 
@@ -175,6 +176,64 @@ final class AlbumStoreManager: ObservableObject {
             print("[AlbumStore] downloadURL failed: domain=\(nsErr.domain) code=\(nsErr.code) info=\(nsErr.userInfo)")
             throw UploadError.objectMissing(underlying: nsErr)
         }
+    }
+
+    // MARK: - Video Upload
+
+    /// Uploads a local video file (URL must be readable on disk) and
+    /// returns `(videoURL, thumbnailURL, duration)`. The thumbnail is
+    /// extracted from the first frame and uploaded as a sibling jpg so
+    /// gallery cells can render instantly without downloading the
+    /// whole clip.
+    func uploadVideo(_ fileURL: URL, albumId: String) async throws -> (videoURL: String, thumbnailURL: String, duration: Double) {
+        isUploading = true
+        defer { isUploading = false }
+
+        let baseName = UUID().uuidString
+        let videoRef = storage.reference().child("famoria_albums/\(albumId)/\(baseName).mov")
+        let thumbRef = storage.reference().child("famoria_albums/\(albumId)/\(baseName)-thumb.jpg")
+
+        // 1. Upload the video file (uses putFileAsync so Storage can
+        //    stream it from disk rather than load it into memory).
+        let videoMeta = StorageMetadata()
+        videoMeta.contentType = "video/quicktime"
+        _ = try await videoRef.putFileAsync(from: fileURL, metadata: videoMeta)
+        let videoURL = try await videoRef.downloadURL().absoluteString
+
+        // 2. Extract a still from the first frame for the thumbnail.
+        let (thumbnailURL, duration) = try await uploadThumbnail(
+            from: fileURL,
+            ref: thumbRef
+        )
+
+        return (videoURL, thumbnailURL, duration)
+    }
+
+    private func uploadThumbnail(from videoURL: URL, ref: StorageReference) async throws -> (String, Double) {
+        let asset = AVURLAsset(url: videoURL)
+        let duration: Double = {
+            if #available(iOS 16.0, *) {
+                // Try the async load; fall back to 0 on timeout.
+                return (try? Double(CMTimeGetSeconds(asset.duration))) ?? 0
+            } else {
+                return CMTimeGetSeconds(asset.duration)
+            }
+        }()
+
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        let time = CMTime(seconds: 0.5, preferredTimescale: 600)
+        let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+        let uiImage = UIImage(cgImage: cgImage)
+
+        guard let data = uiImage.jpegData(compressionQuality: 0.7) else {
+            throw UploadError.compressionFailed
+        }
+        let meta = StorageMetadata()
+        meta.contentType = "image/jpeg"
+        _ = try await ref.putDataAsync(data, metadata: meta)
+        let url = try await ref.downloadURL().absoluteString
+        return (url, duration)
     }
 
     enum UploadError: LocalizedError {

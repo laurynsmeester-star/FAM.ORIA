@@ -18,6 +18,7 @@
 //
 
 import SwiftUI
+import AVKit
 
 // MARK: - Slideshow Speed
 
@@ -59,39 +60,53 @@ struct PhotoSlideshowView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // ── Main Image ───────────────────────────────────────────
+            // ── Main Media — image or AVPlayer based on mediaType ────
             if !photos.isEmpty {
                 let photo = photos[currentIndex]
-                AsyncImage(url: URL(string: photo.imageURL)) { phase in
-                    switch phase {
-                    case .success(let img):
-                        img
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    case .failure:
-                        VStack(spacing: 12) {
-                            Image(systemName: "photo.slash")
-                                .font(.system(size: 48))
-                                .foregroundColor(.white.opacity(0.4))
-                            Text("Could not load photo")
-                                .font(.subheadline)
-                                .foregroundColor(.white.opacity(0.5))
+                if photo.mediaType == .video,
+                   let urlString = photo.videoURL,
+                   let url = URL(string: urlString) {
+                    SlideshowVideoPlayer(url: url)
+                        .id(currentIndex)
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: direction > 0 ? .trailing : .leading).combined(with: .opacity),
+                                removal:   .move(edge: direction > 0 ? .leading  : .trailing).combined(with: .opacity)
+                            )
+                        )
+                        .animation(.easeInOut(duration: 0.35), value: currentIndex)
+                } else {
+                    AsyncImage(url: URL(string: photo.imageURL)) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        case .failure:
+                            VStack(spacing: 12) {
+                                Image(systemName: "photo.slash")
+                                    .font(.system(size: 48))
+                                    .foregroundColor(.white.opacity(0.4))
+                                Text("Could not load photo")
+                                    .font(.subheadline)
+                                    .foregroundColor(.white.opacity(0.5))
+                            }
+                        default:
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .tint(.white)
                         }
-                    default:
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .tint(.white)
                     }
-                }
-                .id(currentIndex)               // forces re-render with animation
-                .transition(
-                    .asymmetric(
-                        insertion: .move(edge: direction > 0 ? .trailing : .leading).combined(with: .opacity),
-                        removal:   .move(edge: direction > 0 ? .leading  : .trailing).combined(with: .opacity)
+                    .id(currentIndex)
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: direction > 0 ? .trailing : .leading).combined(with: .opacity),
+                            removal:   .move(edge: direction > 0 ? .leading  : .trailing).combined(with: .opacity)
+                        )
                     )
-                )
-                .animation(.easeInOut(duration: 0.35), value: currentIndex)
+                    .animation(.easeInOut(duration: 0.35), value: currentIndex)
+                }
             }
 
             // ── Swipe Gesture ────────────────────────────────────────
@@ -295,5 +310,35 @@ struct PhotoSlideshowView: View {
 private extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+// MARK: - SlideshowVideoPlayer
+
+/// AVKit-backed player used when a slideshow item is a video clip.
+/// Auto-plays on appear, pauses when the user swipes away (its `.id`
+/// rebinding tears the AVPlayer down).
+struct SlideshowVideoPlayer: View {
+    let url: URL
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        ZStack {
+            if let player {
+                VideoPlayer(player: player)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                ProgressView().tint(.white)
+            }
+        }
+        .onAppear {
+            let p = AVPlayer(url: url)
+            p.play()
+            player = p
+        }
+        .onDisappear {
+            player?.pause()
+            player = nil
+        }
     }
 }

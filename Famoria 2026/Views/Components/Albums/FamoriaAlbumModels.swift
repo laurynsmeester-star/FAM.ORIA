@@ -106,13 +106,30 @@ struct FamoriaAlbum: Identifiable, Codable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
-// MARK: - Photo
+// MARK: - Media Type
+
+/// Discriminator for `FamoriaPhoto` so the same docs collection can
+/// hold both stills and video clips. Defaults to `.photo` so legacy
+/// documents that don't carry the field decode cleanly.
+enum FamoriaMediaType: String, Codable {
+    case photo
+    case video
+}
+
+// MARK: - Photo / Video
 
 struct FamoriaPhoto: Identifiable, Codable {
     @DocumentID var id: String?
 
     var albumId: String
+    /// For photos this is the still image URL. For videos it's a
+    /// thumbnail used while loading; the playable file is `videoURL`.
     var imageURL: String
+    /// Storage download URL for the playable video (nil for stills).
+    var videoURL: String?
+    /// Playback duration in seconds (videos only).
+    var videoDuration: Double?
+    var mediaType: FamoriaMediaType
     var caption: String
     var dateTaken: Date
     var createdAt: Date
@@ -121,24 +138,46 @@ struct FamoriaPhoto: Identifiable, Codable {
         id: String? = nil,
         albumId: String,
         imageURL: String,
+        videoURL: String? = nil,
+        videoDuration: Double? = nil,
+        mediaType: FamoriaMediaType = .photo,
         caption: String = "",
         dateTaken: Date = Date()
     ) {
-        self.id        = id
-        self.albumId   = albumId
-        self.imageURL  = imageURL
-        self.caption   = caption
-        self.dateTaken = dateTaken
-        self.createdAt = Date()
+        self.id            = id
+        self.albumId       = albumId
+        self.imageURL      = imageURL
+        self.videoURL      = videoURL
+        self.videoDuration = videoDuration
+        self.mediaType     = mediaType
+        self.caption       = caption
+        self.dateTaken     = dateTaken
+        self.createdAt     = Date()
     }
 
     enum CodingKeys: String, CodingKey {
         case id
-        case albumId   = "album_id"
-        case imageURL  = "image_url"
+        case albumId       = "album_id"
+        case imageURL      = "image_url"
+        case videoURL      = "video_url"
+        case videoDuration = "video_duration"
+        case mediaType     = "media_type"
         case caption
-        case dateTaken = "date_taken"
-        case createdAt = "created_at"
+        case dateTaken     = "date_taken"
+        case createdAt     = "created_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self._id           = try c.decode(DocumentID<String>.self, forKey: .id)
+        self.albumId       = try c.decode(String.self, forKey: .albumId)
+        self.imageURL      = try c.decode(String.self, forKey: .imageURL)
+        self.videoURL      = try c.decodeIfPresent(String.self, forKey: .videoURL)
+        self.videoDuration = try c.decodeIfPresent(Double.self, forKey: .videoDuration)
+        self.mediaType     = (try? c.decode(FamoriaMediaType.self, forKey: .mediaType)) ?? .photo
+        self.caption       = (try? c.decode(String.self, forKey: .caption)) ?? ""
+        self.dateTaken     = try c.decode(Date.self, forKey: .dateTaken)
+        self.createdAt     = try c.decode(Date.self, forKey: .createdAt)
     }
 }
 

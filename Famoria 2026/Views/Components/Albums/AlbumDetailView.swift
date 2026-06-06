@@ -25,6 +25,7 @@ struct AlbumDetailView: View {
     // Sheet / overlay state
     @State private var showEditAlbum      = false
     @State private var showAddPhotos      = false
+    @State private var showCamera         = false
     @State private var showSlideshow      = false
     @State private var slideshowStartIdx  = 0
     @State private var photoToDelete: FamoriaPhoto? = nil
@@ -104,6 +105,18 @@ struct AlbumDetailView: View {
         // Add photos sheet
         .sheet(isPresented: $showAddPhotos) {
             addPhotosSheet
+        }
+        // In-app camera
+        .fullScreenCover(isPresented: $showCamera) {
+            InAppCameraView(
+                allowsVideo: true,
+                onCapture: { media in
+                    showCamera = false
+                    handleCameraCapture(media)
+                },
+                onCancel: { showCamera = false }
+            )
+            .ignoresSafeArea()
         }
         // Slideshow full-screen
         .fullScreenCover(isPresented: $showSlideshow) {
@@ -265,12 +278,13 @@ struct AlbumDetailView: View {
                         .labelsHidden()
                 }
 
-                // Photo picker
+                // Photo / video picker (PhotosPicker now matches .any so
+                // the user can mix stills and clips in one selection).
                 let uploading = isUploading || store.isUploading
                 PhotosPicker(
                     selection: $pickerItems,
                     maxSelectionCount: 30,
-                    matching: .images
+                    matching: .any(of: [.images, .videos])
                 ) {
                     VStack(spacing: 10) {
                         if uploading {
@@ -283,7 +297,7 @@ struct AlbumDetailView: View {
                             Image(systemName: "photo.badge.plus")
                                 .font(.system(size: 44))
                                 .foregroundStyle(LinearGradient.famoriaPrimary)
-                            Text("Tap to select photos")
+                            Text("Tap to add photos or videos")
                                 .font(.subheadline)
                                 .foregroundColor(Color(UIColor.label))
                             Text("You can pick multiple at once")
@@ -304,8 +318,21 @@ struct AlbumDetailView: View {
                 .disabled(uploading)
                 .onChange(of: pickerItems) { _, newItems in
                     guard !newItems.isEmpty else { return }
-                    uploadPickedPhotos(newItems)
+                    uploadPickedMedia(newItems)
                 }
+
+                // In-app camera entry.
+                Button {
+                    showCamera = true
+                } label: {
+                    Label("Take photo or video", systemImage: "camera.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(LinearGradient.famoriaPrimary)
+                        .cornerRadius(12)
+                }
+                .disabled(uploading)
 
                 if let err = uploadError {
                     Text(err)
@@ -329,6 +356,126 @@ struct AlbumDetailView: View {
     }
 
     // MARK: - Upload Helpers
+
+    /// Handles a mixed selection of stills and videos returned by the
+    /// PhotosPicker. We sniff the picker item's content type and route
+    /// to the photo or video upload path.
+    private func uploadPickedMedia(_ items: [PhotosPickerItem]) {
+        guard let albumId = album.id else { return }
+        Task {
+            isUploading = true
+            uploadError = nil
+            var firstError: String?
+
+            for item in items {
+                let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+                do {
+                    if isVideo,
+                       let url = try await videoFileURL(from: item) {
+                        try await uploadVideo(url, to: albumId)
+                        try? FileManager.default.removeItem(at: url)
+                    } else if let data = try await item.loadTransferable(type: Data.self),
+                              let image = UIImage(data: data) {
+                        try await uploadStill(image, to: albumId)
+                    }
+                } catch {
+                    if firstError == nil { firstError = error.localizedDescription }
+                }
+            }
+
+            pickerItems = []
+            captionDraft = ""
+            dateTakenDraft = Date()
+            isUploading = false
+            if let firstError {
+                uploadError = firstError
+            } else {
+                showAddPhotos = false
+            }
+        }
+    }
+
+    /// PhotosPicker hands video items back as URLs only via the
+    /// transferable Data path. Wrap it so the caller gets a temp file
+    /// URL it can pass to `store.uploadVideo`.
+    private func videoFileURL(from item: PhotosPickerItem) async throws -> URL? {
+        struct MovieRep: Transferable {
+            let url: URL
+            static var transferRepresentation: some TransferRepresentation {
+                FileRepresentation(contentType: .movie) { SentTransferredFile($0.url) } importing: { received in
+                    let dest = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("famoria-vid-\(UUID().uuidString).mov")
+                    try? FileManager.default.removeItem(at: dest)
+                    try FileManager.default.copyItem(at: received.file, to: dest)
+                    return MovieRep(url: dest)
+                }
+            }
+        }
+        return try await item.loadTransferable(type: MovieRep.self)?.url
+    }
+
+    private func uploadStill(_ image: UIImage, to albumId: String) async throws {
+        let url = try await store.uploadImage(image, albumId: albumId)
+        let photo = FamoriaPhoto(
+            albumId: albumId,
+            imageURL: url,
+            mediaType: .photo,
+            caption: captionDraft,
+            dateTaken: dateTakenDraft
+        )
+        try await store.addPhoto(photo)
+        await logUploadActivity(caption: captionDraft, kind: "photo")
+    }
+
+    private func uploadVideo(_ fileURL: URL, to albumId: String) async throws {
+        let result = try await store.uploadVideo(fileURL, albumId: albumId)
+        let photo = FamoriaPhoto(
+            albumId: albumId,
+            imageURL: result.thumbnailURL,
+            videoURL: result.videoURL,
+            videoDuration: result.duration,
+            mediaType: .video,
+            caption: captionDraft,
+            dateTaken: dateTakenDraft
+        )
+        try await store.addPhoto(photo)
+        await logUploadActivity(caption: captionDraft, kind: "video")
+    }
+
+    private func logUploadActivity(caption: String, kind: String) async {
+        guard let familyId = appState.currentFamily?.id,
+              let user = appState.currentUser else { return }
+        await appState.activityService.log(
+            familyId: familyId,
+            kind: .photoAdded,
+            actorName: user.name,
+            actorId: user.id,
+            title: "Added a \(kind) to \(currentAlbum.title)",
+            body: caption.isEmpty ? "Tap to view." : caption
+        )
+    }
+
+    private func handleCameraCapture(_ media: CapturedMedia) {
+        guard let albumId = album.id else { return }
+        Task {
+            isUploading = true
+            uploadError = nil
+            do {
+                switch media {
+                case .photo(let image):
+                    try await uploadStill(image, to: albumId)
+                case .video(let url):
+                    try await uploadVideo(url, to: albumId)
+                    try? FileManager.default.removeItem(at: url)
+                }
+            } catch {
+                uploadError = error.localizedDescription
+            }
+            isUploading = false
+            captionDraft = ""
+            dateTakenDraft = Date()
+        }
+    }
 
     private func uploadPickedPhotos(_ items: [PhotosPickerItem]) {
         guard let albumId = album.id else { return }
@@ -391,7 +538,7 @@ struct PhotoThumbnailCell: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .bottomLeading) {
-                AsyncImage(url: URL(string: photo.imageURL)) { phase in
+                CachedAsyncImage(url: URL(string: photo.imageURL)) { phase in
                     switch phase {
                     case .success(let img):
                         img.resizable().scaledToFill()
@@ -418,6 +565,22 @@ struct PhotoThumbnailCell: View {
                         .lineLimit(1)
                         .padding(.horizontal, 6)
                         .padding(.bottom, 4)
+                }
+
+                // Video badge — sits in the top-right corner so users
+                // know a cell is playable before they tap it.
+                if photo.mediaType == .video {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Image(systemName: "play.circle.fill")
+                                .font(.title3)
+                                .foregroundColor(.white)
+                                .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
+                                .padding(6)
+                        }
+                        Spacer()
+                    }
                 }
             }
         }

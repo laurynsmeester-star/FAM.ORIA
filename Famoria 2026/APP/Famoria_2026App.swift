@@ -204,6 +204,9 @@ struct Famoria_2026App: App {
                             FamoriaNotificationScheduler.scheduleAllEventReminders(events: events)
                         }
                     }
+                    .onChange(of: appState.posts) { _, posts in
+                        OnThisDayScheduler.reschedule(posts: posts)
+                    }
 
                 if lockManager.isLocked {
                     AppLockOverlay()
