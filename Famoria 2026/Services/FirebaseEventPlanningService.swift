@@ -46,6 +46,12 @@ final class FirebaseEventPlanningService {
     private func documentsRef(familyId: String, eventId: String) -> CollectionReference {
         eventDoc(familyId: familyId, eventId: eventId).collection("documents")
     }
+    private func budgetRef(familyId: String, eventId: String) -> CollectionReference {
+        eventDoc(familyId: familyId, eventId: eventId).collection("budget")
+    }
+    private func groceryRef(familyId: String, eventId: String) -> CollectionReference {
+        eventDoc(familyId: familyId, eventId: eventId).collection("grocery")
+    }
 
     // MARK: - RSVPs
 
@@ -146,6 +152,38 @@ final class FirebaseEventPlanningService {
     }
     func observeDocuments(familyId: String, eventId: String, onChange: @escaping ([EventDocument]) -> Void) -> ListenerRegistration {
         documentsRef(familyId: familyId, eventId: eventId).addSnapshotListener { snapshot, _ in
+            onChange(decode(snapshot))
+        }
+    }
+
+    // MARK: - Budget
+
+    func upsert(budgetItem: EventBudgetItem, familyId: String, eventId: String) async throws {
+        try budgetRef(familyId: familyId, eventId: eventId)
+            .document(budgetItem.id)
+            .setData(from: budgetItem)
+    }
+    func delete(budgetItemId: String, familyId: String, eventId: String) async throws {
+        try await budgetRef(familyId: familyId, eventId: eventId).document(budgetItemId).delete()
+    }
+    func observeBudget(familyId: String, eventId: String, onChange: @escaping ([EventBudgetItem]) -> Void) -> ListenerRegistration {
+        budgetRef(familyId: familyId, eventId: eventId).addSnapshotListener { snapshot, _ in
+            onChange(decode(snapshot))
+        }
+    }
+
+    // MARK: - Grocery / Checklist
+
+    func upsert(groceryItem: EventGroceryItem, familyId: String, eventId: String) async throws {
+        try groceryRef(familyId: familyId, eventId: eventId)
+            .document(groceryItem.id)
+            .setData(from: groceryItem)
+    }
+    func delete(groceryItemId: String, familyId: String, eventId: String) async throws {
+        try await groceryRef(familyId: familyId, eventId: eventId).document(groceryItemId).delete()
+    }
+    func observeGrocery(familyId: String, eventId: String, onChange: @escaping ([EventGroceryItem]) -> Void) -> ListenerRegistration {
+        groceryRef(familyId: familyId, eventId: eventId).addSnapshotListener { snapshot, _ in
             onChange(decode(snapshot))
         }
     }

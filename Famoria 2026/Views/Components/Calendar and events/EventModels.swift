@@ -342,3 +342,67 @@ public struct EventReminder: Identifiable, Codable, Equatable, Hashable {
         self.enabled = enabled
     }
 }
+
+// MARK: - Budget
+
+/// One line in an event budget (venue, catering, flowers, etc.). Stored
+/// under `families/{familyId}/eventPlanning/{eventId}/budget/{id}`.
+public struct EventBudgetItem: Identifiable, Codable, Equatable, Hashable {
+    public let id: String
+    public var eventId: String
+    public var title: String
+    public var category: String
+    public var amount: Double
+    public var isPaid: Bool
+    public var assignedTo: String
+    public var notes: String
+
+    public init(
+        id: String = UUID().uuidString,
+        eventId: String,
+        title: String,
+        category: String = "General",
+        amount: Double = 0,
+        isPaid: Bool = false,
+        assignedTo: String = "",
+        notes: String = ""
+    ) {
+        self.id = id
+        self.eventId = eventId
+        self.title = title
+        self.category = category
+        self.amount = amount
+        self.isPaid = isPaid
+        self.assignedTo = assignedTo
+        self.notes = notes
+    }
+}
+
+// MARK: - Grocery / Checklist
+
+/// One line on the event's shared grocery/shopping list. Stored under
+/// `families/{familyId}/eventPlanning/{eventId}/grocery/{id}`.
+public struct EventGroceryItem: Identifiable, Codable, Equatable, Hashable {
+    public let id: String
+    public var eventId: String
+    public var name: String
+    public var quantity: String
+    public var assignedTo: String
+    public var isPurchased: Bool
+
+    public init(
+        id: String = UUID().uuidString,
+        eventId: String,
+        name: String,
+        quantity: String = "",
+        assignedTo: String = "",
+        isPurchased: Bool = false
+    ) {
+        self.id = id
+        self.eventId = eventId
+        self.name = name
+        self.quantity = quantity
+        self.assignedTo = assignedTo
+        self.isPurchased = isPurchased
+    }
+}

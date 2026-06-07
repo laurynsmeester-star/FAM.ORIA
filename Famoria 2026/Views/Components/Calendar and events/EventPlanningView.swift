@@ -14,6 +14,8 @@ import SwiftUI
 import Combine
 import FirebaseFirestore
 import os
+import WeatherKit
+import CoreLocation
 
 // MARK: - Store / View model
 
@@ -25,6 +27,8 @@ final class EventPlanningStore: ObservableObject {
     @Published var polls: [EventPoll] = []
     @Published var votes: [PollVote] = []
     @Published var documents: [EventDocument] = []
+    @Published var budget: [EventBudgetItem] = []
+    @Published var grocery: [EventGroceryItem] = []
 
     let event: FamilyEventV2
 
@@ -63,6 +67,49 @@ final class EventPlanningStore: ObservableObject {
         listeners.append(service.observeDocuments(familyId: familyId, eventId: event.id) { [weak self] items in
             Task { @MainActor in self?.documents = items.sorted { $0.addedDate > $1.addedDate } }
         })
+        listeners.append(service.observeBudget(familyId: familyId, eventId: event.id) { [weak self] items in
+            Task { @MainActor in self?.budget = items.sorted { $0.title < $1.title } }
+        })
+        listeners.append(service.observeGrocery(familyId: familyId, eventId: event.id) { [weak self] items in
+            Task { @MainActor in self?.grocery = items.sorted { lhs, rhs in
+                if lhs.isPurchased != rhs.isPurchased { return !lhs.isPurchased }
+                return lhs.name < rhs.name
+            } }
+        })
+    }
+
+    // Budget
+    func addBudgetItem(_ item: EventBudgetItem) {
+        guard let familyId else { return }
+        Task { try? await service.upsert(budgetItem: item, familyId: familyId, eventId: event.id) }
+    }
+    func togglePaid(_ id: String) {
+        guard let familyId, let i = budget.firstIndex(where: { $0.id == id }) else { return }
+        var updated = budget[i]
+        updated.isPaid.toggle()
+        if updated.isPaid { Haptics.success() } else { Haptics.selection() }
+        Task { try? await service.upsert(budgetItem: updated, familyId: familyId, eventId: event.id) }
+    }
+    func deleteBudgetItem(_ id: String) {
+        guard let familyId else { return }
+        Task { try? await service.delete(budgetItemId: id, familyId: familyId, eventId: event.id) }
+    }
+
+    // Grocery
+    func addGroceryItem(_ item: EventGroceryItem) {
+        guard let familyId else { return }
+        Task { try? await service.upsert(groceryItem: item, familyId: familyId, eventId: event.id) }
+    }
+    func togglePurchased(_ id: String) {
+        guard let familyId, let i = grocery.firstIndex(where: { $0.id == id }) else { return }
+        var updated = grocery[i]
+        updated.isPurchased.toggle()
+        if updated.isPurchased { Haptics.success() } else { Haptics.selection() }
+        Task { try? await service.upsert(groceryItem: updated, familyId: familyId, eventId: event.id) }
+    }
+    func deleteGroceryItem(_ id: String) {
+        guard let familyId else { return }
+        Task { try? await service.delete(groceryItemId: id, familyId: familyId, eventId: event.id) }
     }
 
     // RSVP
@@ -187,7 +234,7 @@ struct EventDocument: Identifiable, Equatable, Hashable {
 // MARK: - Tabs
 
 enum PlanningTab: String, CaseIterable, Identifiable {
-    case rsvp, tasks, schedule, polls, docs
+    case rsvp, tasks, schedule, polls, docs, budget, grocery
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -196,6 +243,8 @@ enum PlanningTab: String, CaseIterable, Identifiable {
         case .schedule: return "Schedule"
         case .polls:    return "Polls"
         case .docs:     return "Docs"
+        case .budget:   return "Budget"
+        case .grocery:  return "Grocery"
         }
     }
     var icon: String {
@@ -205,6 +254,8 @@ enum PlanningTab: String, CaseIterable, Identifiable {
         case .schedule: return "clock.fill"
         case .polls:    return "chart.bar.fill"
         case .docs:     return "doc.text.fill"
+        case .budget:   return "dollarsign.circle.fill"
+        case .grocery:  return "cart.fill"
         }
     }
 }
@@ -230,8 +281,11 @@ struct EventPlanningView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     headerBlock
 
+                    EventCountdownCard(event: store.event)
+
                     if let loc = store.event.location, !loc.isEmpty {
                         EventMapView(location: loc, eventTitle: store.event.title)
+                        EventWeatherCard(location: loc, eventDate: store.event.date)
                     }
 
                     tabBar
@@ -243,6 +297,8 @@ struct EventPlanningView: View {
                         case .schedule: ScheduleTab(store: store)
                         case .polls:    PollsTab(store: store, currentVoter: appState.currentUser?.name ?? "")
                         case .docs:     DocsTab(store: store, currentUser: appState.currentUser?.name ?? "")
+                        case .budget:   BudgetTab(store: store)
+                        case .grocery:  GroceryTab(store: store)
                         }
                     }
                     .transition(.opacity)
@@ -354,6 +410,12 @@ struct EventPlanningView: View {
             return store.polls.isEmpty ? nil : "\(store.polls.count)"
         case .docs:
             return store.documents.isEmpty ? nil : "\(store.documents.count)"
+        case .budget:
+            return store.budget.isEmpty ? nil : "\(store.budget.count)"
+        case .grocery:
+            guard !store.grocery.isEmpty else { return nil }
+            let bought = store.grocery.filter { $0.isPurchased }.count
+            return "\(bought)/\(store.grocery.count)"
         }
     }
 }
@@ -848,5 +910,404 @@ private struct DocsTab: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Countdown Card
+
+/// Prominent countdown ribbon at the top of every event-plan screen.
+/// Shows days/hours/minutes until the event start. Ticks every minute
+/// so the user sees the time melting away.
+struct EventCountdownCard: View {
+    let event: FamilyEventV2
+    @State private var now = Date()
+    private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+
+    private var startDate: Date {
+        guard let t = event.startTime else { return event.date }
+        let cal = Calendar.current
+        let day = cal.dateComponents([.year, .month, .day], from: event.date)
+        let time = cal.dateComponents([.hour, .minute], from: t)
+        var merged = DateComponents()
+        merged.year = day.year; merged.month = day.month; merged.day = day.day
+        merged.hour = time.hour; merged.minute = time.minute
+        return cal.date(from: merged) ?? event.date
+    }
+
+    private var components: DateComponents {
+        Calendar.current.dateComponents([.day, .hour, .minute], from: now, to: startDate)
+    }
+
+    private var isPast: Bool { startDate < now }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: isPast ? "checkmark.seal.fill" : "hourglass")
+                .font(.title2)
+                .foregroundColor(.white)
+                .frame(width: 44, height: 44)
+                .background(
+                    LinearGradient(colors: [.purple, .pink],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                )
+                .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isPast ? "Event has started" : "Countdown")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
+                Text(countdownText)
+                    .font(.title3.weight(.bold))
+                    .monospacedDigit()
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(LinearGradient(colors: [Color.purple.opacity(0.08), Color.pink.opacity(0.06)],
+                                     startPoint: .leading, endPoint: .trailing))
+        )
+        .onReceive(timer) { now = $0 }
+    }
+
+    private var countdownText: String {
+        if isPast { return "Happening now" }
+        let days = max(0, components.day ?? 0)
+        let hours = max(0, components.hour ?? 0)
+        let minutes = max(0, components.minute ?? 0)
+        if days >= 1 {
+            return "\(days)d \(hours)h \(minutes)m"
+        } else if hours >= 1 {
+            return "\(hours)h \(minutes)m"
+        } else {
+            return "\(minutes)m"
+        }
+    }
+}
+
+// MARK: - Weather Card
+
+/// WeatherKit-backed forecast card for the event's location. Resolves
+/// the location string to coordinates via CLGeocoder, then fetches a
+/// daily forecast for the event's day (or current conditions if the
+/// event is within the next hour). Quietly omits itself on failure so
+/// missing entitlements / network drops don't block the rest of the
+/// planner.
+struct EventWeatherCard: View {
+    let location: String
+    let eventDate: Date
+
+    @State private var temperature: String?
+    @State private var condition: String?
+    @State private var symbolName: String?
+    @State private var loadFailed = false
+
+    var body: some View {
+        Group {
+            if let temperature, let condition, let symbolName {
+                HStack(spacing: 12) {
+                    Image(systemName: symbolName)
+                        .font(.title)
+                        .foregroundColor(.blue)
+                        .frame(width: 44, height: 44)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(condition)
+                            .font(.subheadline.weight(.semibold))
+                        Text("\(temperature) at \(location)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                .background(Color(.systemBackground))
+                .cornerRadius(14)
+                .shadow(color: .black.opacity(0.04), radius: 4, y: 1)
+            } else if !loadFailed {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Loading weather…")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.systemBackground))
+                .cornerRadius(14)
+            }
+        }
+        .task {
+            await load()
+        }
+    }
+
+    private func load() async {
+        do {
+            let placemarks = try await CLGeocoder().geocodeAddressString(location)
+            guard let location = placemarks.first?.location else {
+                loadFailed = true
+                return
+            }
+            let weather = try await WeatherService.shared.weather(for: location)
+
+            // Pick the forecast day that matches the event date.
+            let cal = Calendar.current
+            let target = cal.startOfDay(for: eventDate)
+            let day = weather.dailyForecast.first(where: { cal.isDate($0.date, inSameDayAs: target) })
+
+            let formatter = MeasurementFormatter()
+            formatter.unitOptions = [.providedUnit, .naturalScale]
+            formatter.numberFormatter.maximumFractionDigits = 0
+
+            if let day {
+                let high = formatter.string(from: day.highTemperature)
+                let low  = formatter.string(from: day.lowTemperature)
+                temperature = "\(high) / \(low)"
+                condition = day.condition.description
+                symbolName = day.symbolName
+            } else {
+                let current = weather.currentWeather
+                temperature = formatter.string(from: current.temperature)
+                condition = current.condition.description
+                symbolName = current.symbolName
+            }
+        } catch {
+            loadFailed = true
+        }
+    }
+}
+
+// MARK: - Budget Tab
+
+struct BudgetTab: View {
+    @ObservedObject var store: EventPlanningStore
+    @EnvironmentObject var appState: AppState
+    @State private var newTitle = ""
+    @State private var newAmount: Double = 0
+    @State private var newAssignee = ""
+    @State private var newCategory = "General"
+
+    private var total: Double {
+        store.budget.reduce(0) { $0 + $1.amount }
+    }
+    private var spent: Double {
+        store.budget.filter(\.isPaid).reduce(0) { $0 + $1.amount }
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Total")
+                        .font(.caption).foregroundColor(.secondary)
+                    Text(format(total))
+                        .font(.title3.weight(.bold))
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Paid")
+                        .font(.caption).foregroundColor(.secondary)
+                    Text(format(spent))
+                        .font(.title3.weight(.bold))
+                        .foregroundColor(.green)
+                }
+            }
+            .padding(14)
+            .background(Color(.systemBackground))
+            .cornerRadius(14)
+            .shadow(color: .black.opacity(0.04), radius: 4, y: 1)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Add line item").font(.caption.weight(.semibold)).foregroundColor(.secondary)
+                TextField("Title", text: $newTitle).textFieldStyle(.roundedBorder)
+                HStack {
+                    TextField("Amount", value: $newAmount, format: .number)
+                        .keyboardType(.decimalPad)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Category", text: $newCategory).textFieldStyle(.roundedBorder)
+                }
+                HStack {
+                    TextField("Assigned to (optional)", text: $newAssignee).textFieldStyle(.roundedBorder)
+                    Button {
+                        addItem()
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.purple)
+                    }
+                    .disabled(newTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .padding(14)
+            .background(Color(.systemBackground))
+            .cornerRadius(14)
+
+            VStack(spacing: 8) {
+                ForEach(store.budget) { item in
+                    HStack {
+                        Button {
+                            store.togglePaid(item.id)
+                        } label: {
+                            Image(systemName: item.isPaid ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(item.isPaid ? .green : .secondary)
+                                .font(.title3)
+                        }
+                        .buttonStyle(.plain)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title)
+                                .font(.subheadline.weight(.semibold))
+                                .strikethrough(item.isPaid)
+                            HStack(spacing: 6) {
+                                Text(item.category).font(.caption2).foregroundColor(.secondary)
+                                if !item.assignedTo.isEmpty {
+                                    Text("• \(item.assignedTo)").font(.caption2).foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        Spacer()
+                        Text(format(item.amount)).font(.subheadline.weight(.semibold))
+                        Menu {
+                            Button(role: .destructive) {
+                                store.deleteBudgetItem(item.id)
+                            } label: { Label("Delete", systemImage: "trash") }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .foregroundColor(.secondary)
+                                .padding(4)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color(.systemBackground))
+                    .cornerRadius(10)
+                }
+            }
+        }
+    }
+
+    private func addItem() {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        let item = EventBudgetItem(
+            eventId: store.event.id,
+            title: trimmed,
+            category: newCategory.isEmpty ? "General" : newCategory,
+            amount: newAmount,
+            assignedTo: newAssignee
+        )
+        store.addBudgetItem(item)
+        newTitle = ""
+        newAmount = 0
+        newAssignee = ""
+        Haptics.send()
+    }
+
+    private func format(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        return formatter.string(from: NSNumber(value: value)) ?? "$\(value)"
+    }
+}
+
+// MARK: - Grocery Tab
+
+struct GroceryTab: View {
+    @ObservedObject var store: EventPlanningStore
+    @EnvironmentObject var appState: AppState
+    @State private var newName = ""
+    @State private var newQty = ""
+    @State private var newAssignee = ""
+
+    var body: some View {
+        VStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Add item").font(.caption.weight(.semibold)).foregroundColor(.secondary)
+                HStack {
+                    TextField("Item", text: $newName).textFieldStyle(.roundedBorder)
+                    TextField("Qty", text: $newQty)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 70)
+                }
+                HStack {
+                    TextField("Who's bringing it?", text: $newAssignee).textFieldStyle(.roundedBorder)
+                    Button {
+                        addItem()
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.purple)
+                    }
+                    .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .padding(14)
+            .background(Color(.systemBackground))
+            .cornerRadius(14)
+
+            if store.grocery.isEmpty {
+                Text("No items yet. Add what you need above.")
+                    .font(.caption).foregroundColor(.secondary)
+                    .padding(20)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(store.grocery) { item in
+                        HStack {
+                            Button {
+                                store.togglePurchased(item.id)
+                            } label: {
+                                Image(systemName: item.isPurchased ? "checkmark.circle.fill" : "circle")
+                                    .foregroundColor(item.isPurchased ? .green : .secondary)
+                                    .font(.title3)
+                            }
+                            .buttonStyle(.plain)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.name)
+                                    .font(.subheadline.weight(.semibold))
+                                    .strikethrough(item.isPurchased)
+                                if !item.assignedTo.isEmpty {
+                                    Text(item.assignedTo)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            Spacer()
+                            if !item.quantity.isEmpty {
+                                Text(item.quantity)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundColor(.secondary)
+                            }
+                            Menu {
+                                Button(role: .destructive) {
+                                    store.deleteGroceryItem(item.id)
+                                } label: { Label("Delete", systemImage: "trash") }
+                            } label: {
+                                Image(systemName: "ellipsis")
+                                    .foregroundColor(.secondary)
+                                    .padding(4)
+                            }
+                        }
+                        .padding(10)
+                        .background(Color(.systemBackground))
+                        .cornerRadius(10)
+                    }
+                }
+            }
+        }
+    }
+
+    private func addItem() {
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        let item = EventGroceryItem(
+            eventId: store.event.id,
+            name: trimmed,
+            quantity: newQty,
+            assignedTo: newAssignee
+        )
+        store.addGroceryItem(item)
+        newName = ""
+        newQty = ""
+        newAssignee = ""
+        Haptics.send()
     }
 }
