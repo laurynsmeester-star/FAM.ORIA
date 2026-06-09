@@ -155,9 +155,19 @@ private struct JournalEntriesTab: View {
         db.collection("famoria_journal_entries").document(id).delete()
     }
 
+    @State private var prefilledPromptTitle: String? = nil
+    @State private var versionHistoryEntry: FamilyJournalEntry? = nil
+
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                WeeklyJournalPromptCard { promptTitle in
+                    prefilledPromptTitle = promptTitle
+                    showNewEntry = true
+                }
+                .padding(.horizontal)
+                .padding(.top, 8)
+
                 if entries.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "book.fill")
@@ -193,7 +203,8 @@ private struct JournalEntriesTab: View {
                                 onDelete: {
                                     deleteTargetId = entry.id
                                     showDeleteConfirm = true
-                                }
+                                },
+                                onShowHistory: { versionHistoryEntry = entry }
                             )
                         }
                     }
@@ -222,11 +233,12 @@ private struct JournalEntriesTab: View {
         }
         .onAppear { startListening() }
         .onDisappear { listener?.remove(); listener = nil }
-        .sheet(isPresented: $showNewEntry) {
+        .sheet(isPresented: $showNewEntry, onDismiss: { prefilledPromptTitle = nil }) {
             NewFamilyJournalEntrySheet(
                 onSave: saveEntry,
                 authorName: appState.currentUser?.name ?? "Unknown",
-                authorId: appState.currentUser?.id
+                authorId: appState.currentUser?.id,
+                prefilledTitle: prefilledPromptTitle
             )
         }
         .sheet(item: $editingEntry) { entry in
@@ -236,6 +248,9 @@ private struct JournalEntriesTab: View {
                 authorId: entry.authorId ?? appState.currentUser?.id,
                 editingEntry: entry
             )
+        }
+        .sheet(item: $versionHistoryEntry) { entry in
+            JournalVersionHistorySheet(entry: entry)
         }
         .alert("Delete Entry", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) { deleteTargetId = nil }
@@ -260,12 +275,25 @@ struct FamilyJournalEntry: Identifiable, Codable, Equatable, Hashable {
     var mood: String
     var createdDate: Date
     var isPrivate: Bool = false
+    /// Snapshot of the entry's `body` at each prior save, newest first.
+    /// Empty for entries that have never been edited.
+    var versions: [JournalVersion] = []
+    /// Set true when `body` contains rich-text markdown. Rendered via
+    /// `AttributedString(markdown:)` in the card / detail views.
+    var isRichText: Bool = false
+}
+
+struct JournalVersion: Codable, Equatable, Hashable, Identifiable {
+    var id: String = UUID().uuidString
+    var body: String
+    var savedAt: Date
 }
 
 private struct FamilyJournalEntryCard: View {
     let entry: FamilyJournalEntry
     var onEdit: () -> Void = {}
     var onDelete: () -> Void = {}
+    var onShowHistory: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -296,6 +324,11 @@ private struct FamilyJournalEntryCard: View {
                     Button { onEdit() } label: {
                         Label("Edit", systemImage: "pencil")
                     }
+                    if !entry.versions.isEmpty {
+                        Button { onShowHistory() } label: {
+                            Label("History (\(entry.versions.count))", systemImage: "clock.arrow.circlepath")
+                        }
+                    }
                     Button(role: .destructive) { onDelete() } label: {
                         Label("Delete", systemImage: "trash")
                     }
@@ -307,10 +340,19 @@ private struct FamilyJournalEntryCard: View {
                 }
             }
 
-            Text(entry.body)
-                .font(.body)
-                .foregroundColor(.primary.opacity(0.85))
-                .lineLimit(4)
+            // Render markdown when the entry was saved with rich-text
+            // formatting; fall back to plain text for legacy entries.
+            if entry.isRichText, let attr = try? AttributedString(markdown: entry.body) {
+                Text(attr)
+                    .font(.body)
+                    .foregroundColor(.primary.opacity(0.85))
+                    .lineLimit(4)
+            } else {
+                Text(entry.body)
+                    .font(.body)
+                    .foregroundColor(.primary.opacity(0.85))
+                    .lineLimit(4)
+            }
 
             HStack {
                 Text("by \(entry.authorName)")
@@ -331,6 +373,9 @@ private struct NewFamilyJournalEntrySheet: View {
     let authorName: String
     let authorId: String?
     var editingEntry: FamilyJournalEntry? = nil
+    /// Optional starter title — used when the weekly prompt is tapped so
+    /// the prompt becomes the entry title.
+    var prefilledTitle: String? = nil
 
     @State private var title = ""
     @State private var bodyText = ""
@@ -377,8 +422,21 @@ private struct NewFamilyJournalEntrySheet: View {
                 }
                 Section("Entry") {
                     TextField("Title", text: $title)
-                    TextField("Write your thoughts...", text: $bodyText, axis: .vertical)
-                        .lineLimit(5...12)
+                    // Rich-text toolbar — wraps the current selection
+                    // with Markdown delimiters. The view stores the raw
+                    // string; AttributedString(markdown:) renders it.
+                    HStack(spacing: 12) {
+                        toolbarButton("bold", "B") { wrap("**", "**") }
+                        toolbarButton("italic", "I") { wrap("*", "*") }
+                        toolbarButton("list.bullet", "•") { prefixLine("- ") }
+                        toolbarButton("list.number", "1.") { prefixLine("1. ") }
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+
+                    TextEditor(text: $bodyText)
+                        .frame(minHeight: 160)
+                        .font(.body)
                 }
                 Section {
                     Toggle(isOn: $isPrivate) {
@@ -406,6 +464,20 @@ private struct NewFamilyJournalEntrySheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
+                        var versions = editingEntry?.versions ?? []
+                        // Snapshot the prior body on every edit so the user
+                        // can still see what they wrote before.
+                        if let prior = editingEntry, prior.body != bodyText {
+                            versions.insert(
+                                JournalVersion(body: prior.body, savedAt: Date()),
+                                at: 0
+                            )
+                            // Cap history depth so the doc doesn't grow
+                            // unbounded over years of edits.
+                            if versions.count > 20 {
+                                versions = Array(versions.prefix(20))
+                            }
+                        }
                         let entry = FamilyJournalEntry(
                             id: editingEntry?.id ?? UUID().uuidString,
                             title: title,
@@ -414,7 +486,9 @@ private struct NewFamilyJournalEntrySheet: View {
                             authorId: editingEntry?.authorId ?? authorId,
                             mood: selectedMood,
                             createdDate: editingEntry?.createdDate ?? Date(),
-                            isPrivate: isPrivate
+                            isPrivate: isPrivate,
+                            versions: versions,
+                            isRichText: true
                         )
                         onSave(entry)
                         dismiss()
@@ -428,8 +502,176 @@ private struct NewFamilyJournalEntrySheet: View {
                     bodyText = e.body
                     selectedMood = e.mood
                     isPrivate = e.isPrivate
+                } else if let prefilledTitle, title.isEmpty {
+                    title = prefilledTitle
                 }
             }
         }
+    }
+
+    // MARK: - Rich-text toolbar helpers
+
+    @ViewBuilder
+    private func toolbarButton(_ systemImage: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.selection()
+            action()
+        } label: {
+            Image(systemName: systemImage)
+                .font(.callout.weight(.semibold))
+                .frame(width: 32, height: 32)
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(8)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    /// Wraps the trailing word (or appends an empty pair the user can
+    /// type into) with the supplied Markdown delimiters.
+    private func wrap(_ open: String, _ close: String) {
+        // TextEditor doesn't expose a selection range in pure SwiftUI,
+        // so we apply the wrap at the end of the current text — which
+        // is what users do 90% of the time on a phone keyboard.
+        if let lastSpace = bodyText.lastIndex(of: " "),
+           lastSpace < bodyText.index(before: bodyText.endIndex) {
+            let word = bodyText[bodyText.index(after: lastSpace)..<bodyText.endIndex]
+            let replacement = "\(open)\(word)\(close)"
+            bodyText.replaceSubrange(bodyText.index(after: lastSpace)..<bodyText.endIndex, with: replacement)
+        } else if !bodyText.isEmpty {
+            bodyText = "\(open)\(bodyText)\(close)"
+        } else {
+            bodyText = "\(open)\(close)"
+        }
+    }
+
+    /// Prefixes the current line with a bullet or number marker.
+    private func prefixLine(_ prefix: String) {
+        if bodyText.isEmpty || bodyText.hasSuffix("\n") {
+            bodyText += prefix
+        } else {
+            bodyText += "\n" + prefix
+        }
+    }
+}
+
+// MARK: - Version History Sheet
+
+struct JournalVersionHistorySheet: View {
+    let entry: FamilyJournalEntry
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Current") {
+                    VersionRow(label: "Now",
+                               date: entry.createdDate,
+                               bodyText: entry.body,
+                               isRichText: entry.isRichText)
+                }
+                if !entry.versions.isEmpty {
+                    Section("Previous edits") {
+                        ForEach(entry.versions) { version in
+                            VersionRow(
+                                label: version.savedAt.formatted(date: .abbreviated, time: .shortened),
+                                date: version.savedAt,
+                                bodyText: version.body,
+                                isRichText: entry.isRichText
+                            )
+                        }
+                    }
+                }
+            }
+            .navigationTitle("History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct VersionRow: View {
+    let label: String
+    let date: Date
+    let bodyText: String
+    let isRichText: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.purple)
+            if isRichText, let attr = try? AttributedString(markdown: bodyText) {
+                Text(attr).font(.subheadline)
+            } else {
+                Text(bodyText).font(.subheadline)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Weekly Journal Prompt
+
+/// Top-of-page weekly writing prompt for the Journal tab. Rotates by
+/// ISO-week so everyone in the family sees the same one for a given
+/// calendar week. Tapping "Write" opens the new-entry sheet pre-filled
+/// with the prompt as the title.
+struct WeeklyJournalPromptCard: View {
+    var onWrite: (_ promptTitle: String) -> Void
+
+    private static let prompts: [String] = [
+        "What surprised you this week?",
+        "A small kindness you saw or did.",
+        "What's worth remembering from this week?",
+        "Something you're proud of.",
+        "Who deserves a thank-you this week?",
+        "What's been on your mind lately?",
+        "A win, big or small.",
+        "Something you'd like to remember in 10 years.",
+        "What made you laugh this week?",
+        "A challenge you worked through."
+    ]
+
+    private var prompt: String {
+        let week = Calendar.current.component(.weekOfYear, from: Date())
+        return Self.prompts[week % Self.prompts.count]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .foregroundColor(.purple)
+                Text("This week's writing prompt")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.purple)
+            }
+            Text(prompt)
+                .font(.headline)
+                .lineLimit(3)
+
+            Button {
+                onWrite(prompt)
+                Haptics.selection()
+            } label: {
+                Label("Write about it", systemImage: "pencil.line")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(Color.purple)
+                    .cornerRadius(10)
+            }
+        }
+        .padding(14)
+        .background(
+            LinearGradient(colors: [Color.purple.opacity(0.08), Color.pink.opacity(0.05)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+        )
+        .cornerRadius(14)
     }
 }
