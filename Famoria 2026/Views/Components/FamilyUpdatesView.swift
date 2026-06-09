@@ -306,6 +306,7 @@ private struct UpdateCard: View {
     @State private var showReplyField = false
     @State private var replyText = ""
     @State private var showReplyMentionPicker = false
+    @State private var showShareSheet = false
     @State private var isEditing = false
     @State private var editText = ""
     @State private var showDeleteConfirm = false
@@ -441,6 +442,15 @@ private struct UpdateCard: View {
                         .foregroundColor(.secondary)
                 }
 
+                Button {
+                    showShareSheet = true
+                    Haptics.selection()
+                } label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 Spacer()
             }
 
@@ -556,6 +566,12 @@ private struct UpdateCard: View {
         .background(Color(.systemBackground))
         .cornerRadius(14)
         .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
+        .sheet(isPresented: $showShareSheet) {
+            FamoriaShareSheet(items: [FamoriaSharePayload(
+                title: "From \(post.authorName)",
+                bodyText: post.content
+            )])
+        }
         .alert("Delete Post", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) { onDelete() }

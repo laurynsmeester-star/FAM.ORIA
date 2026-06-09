@@ -12,6 +12,7 @@ struct FamilyHealthView: View {
     @State private var listener: ListenerRegistration?
     @State private var medListener: ListenerRegistration?
 
+    @StateObject private var healthKit = HealthKitService()
     private let medicationService = MedicationService()
 
     private let db = Firestore.firestore()
@@ -76,6 +77,9 @@ struct FamilyHealthView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 60)
                 } else {
+                    HealthKitTodayCard(service: healthKit)
+                        .padding(.horizontal)
+
                     HealthTrendCard(records: records)
                         .padding(.horizontal)
 
@@ -121,6 +125,7 @@ struct FamilyHealthView: View {
         .onAppear {
             startListening()
             startMedicationListener()
+            Task { await healthKit.requestAuthorization() }
         }
         .onDisappear {
             listener?.remove(); listener = nil
@@ -542,5 +547,48 @@ struct AddMedicationSheet: View {
         Haptics.send()
         onSave(med)
         dismiss()
+    }
+}
+
+// MARK: - HealthKit "Today" Card
+
+/// Pulls steps, sleep, and resting heart rate from HealthKit and shows
+/// them in a compact three-stat strip. Hides itself entirely when the
+/// HealthKit capability isn't enabled / the user denied authorization.
+struct HealthKitTodayCard: View {
+    @ObservedObject var service: HealthKitService
+
+    var body: some View {
+        if !service.isAvailable {
+            EmptyView()
+        } else {
+            HStack(spacing: 12) {
+                stat(icon: "figure.walk",
+                     color: .green,
+                     value: "\(service.stepsToday)",
+                     label: "Steps today")
+                stat(icon: "bed.double.fill",
+                     color: .indigo,
+                     value: String(format: "%.1fh", service.sleepHoursLastNight),
+                     label: "Sleep")
+                stat(icon: "heart.fill",
+                     color: .red,
+                     value: service.restingHeartRate > 0 ? "\(Int(service.restingHeartRate))" : "—",
+                     label: "Resting HR")
+            }
+            .padding(14)
+            .background(Color(.systemBackground))
+            .cornerRadius(14)
+            .shadow(color: .black.opacity(0.05), radius: 4, y: 1)
+        }
+    }
+
+    private func stat(icon: String, color: Color, value: String, label: String) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon).foregroundColor(color)
+            Text(value).font(.headline.monospacedDigit())
+            Text(label).font(.caption2).foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }

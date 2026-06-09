@@ -207,6 +207,14 @@ struct Famoria_2026App: App {
                     .onChange(of: appState.posts) { _, posts in
                         OnThisDayScheduler.reschedule(posts: posts)
                     }
+                    .onChange(of: appState.events) { _, events in
+                        WidgetSnapshotWriter.refresh(
+                            familyName: appState.currentFamily?.name,
+                            events: events,
+                            personalTasks: []
+                        )
+                        Task { await EventLiveActivityManager.startOrUpdate(events: events) }
+                    }
 
                 if lockManager.isLocked {
                     AppLockOverlay()
