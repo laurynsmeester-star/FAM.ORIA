@@ -5,7 +5,7 @@
 
 This Privacy Policy describes how **Famoria** (“we,” “our,” or “us”) collects, uses, and shares personal information when you use the Famoria mobile application (the “App”). This policy applies to all Famoria users, including family members invited to join an existing family group.
 
-**Contact:** privacy@famoria.app
+**Contact:** laurynsmeester@gmail.com
 **Operator:** Famoria — sole proprietorship operated by Lauryn Smeester, United States
 
 ---
