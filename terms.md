@@ -7,7 +7,7 @@ These Terms of Use (“Terms”) form a binding agreement between you and **Famo
 
 If you signed up through Apple’s App Store, these Terms incorporate Apple’s **Licensed Application End User License Agreement** (the “Apple EULA”), available at https://www.apple.com/legal/internet-services/itunes/dev/stdeula/, and Apple is a third-party beneficiary entitled to enforce them.
 
-**Contact:** support@famoria.app
+**Contact:** laurynsmeester@gmail.com
 
 ---
 
